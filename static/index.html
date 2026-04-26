@@ -73,6 +73,26 @@
             --shadow: none;
         }
 
+        /* --- BBS EGA/VGA (retro, full ANSI 16-color on classic IBM blue) --- */
+        :root[data-theme="bbs-ega"] {
+            --bg: #0000aa;            /* IBM blue */
+            --card-bg: #000000;
+            --card-border: #aaaaaa;
+            --text: #aaaaaa;          /* light gray */
+            --text-muted: #5555ff;    /* bright blue */
+            --primary: #ffff55;       /* yellow — classic "selected" */
+            --primary-fg: #000000;
+            --primary-hover: #ffffff;
+            --success: #55ff55;       /* bright green */
+            --error: #ff5555;         /* bright red */
+            --warning: #ffff55;       /* yellow */
+            --info: #55ffff;          /* bright cyan */
+            --accent: #ff55ff;        /* bright magenta */
+            --border-width: 2px;
+            --radius: 0;
+            --shadow: none;
+        }
+
         body {
             font-family: var(--font-body);
             max-width: 900px;
@@ -190,6 +210,8 @@
         }
         .author-card:hover { border-color: var(--primary); }
         :root[data-theme^="bbs-"] .author-card:hover { background: rgba(0, 255, 0, 0.08); }
+        :root[data-theme="bbs-amber"] .author-card:hover { background: rgba(255, 176, 0, 0.10); }
+        :root[data-theme="bbs-ega"] .author-card:hover { background: rgba(255, 255, 85, 0.10); }
 
         .author-header { display: flex; gap: 12px; align-items: flex-start; }
         .author-photo {
@@ -203,6 +225,7 @@
             border-radius: 0;
         }
         :root[data-theme="bbs-amber"] .author-photo { filter: grayscale(1) sepia(1) hue-rotate(0deg) brightness(1.1); }
+        :root[data-theme="bbs-ega"] .author-photo { filter: none; border-color: var(--card-border); }
         .author-info h4 { margin: 0; font-size: 17px; }
         .author-info p { margin: 3px 0; font-size: 13px; color: var(--text-muted); }
         .author-bio { font-size: 13px; margin: 10px 0; color: var(--text-muted); line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
@@ -213,10 +236,13 @@
         th { background: rgba(255, 255, 255, 0.03); text-align: left; padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 13px; color: var(--text-muted); }
         :root[data-theme^="bbs-"] th { background: rgba(0, 255, 0, 0.08); color: var(--text); }
         :root[data-theme="bbs-amber"] th { background: rgba(255, 176, 0, 0.10); }
+        :root[data-theme="bbs-ega"] th { background: rgba(255, 255, 85, 0.10); color: var(--info); }
         td { padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 14px; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
         :root[data-theme^="bbs-"] tr:hover td { background: rgba(0, 255, 0, 0.06); }
+        :root[data-theme="bbs-amber"] tr:hover td { background: rgba(255, 176, 0, 0.08); }
+        :root[data-theme="bbs-ega"] tr:hover td { background: rgba(85, 255, 255, 0.10); }
 
         .chk-col { width: 40px; text-align: center; }
         .kind-badge {
@@ -336,6 +362,7 @@
                 <option value="neutral">Neutral</option>
                 <option value="bbs-green">BBS · Green</option>
                 <option value="bbs-amber">BBS · Amber</option>
+                <option value="bbs-ega">BBS · EGA/VGA</option>
             </select>
             <form method="post" action="/logout" style="margin:0;"><button type="submit" class="link-btn">Sign out</button></form>
         </span>
@@ -376,7 +403,7 @@
         // --- Theme persistence ---
         const THEME_KEY = 'librarydog.theme';
         function setTheme(name) {
-            const valid = ['neutral', 'bbs-green', 'bbs-amber'];
+            const valid = ['neutral', 'bbs-green', 'bbs-amber', 'bbs-ega'];
             const t = valid.includes(name) ? name : 'neutral';
             document.documentElement.setAttribute('data-theme', t);
             try { localStorage.setItem(THEME_KEY, t); } catch (_) {}

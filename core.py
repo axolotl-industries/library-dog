@@ -460,6 +460,7 @@ class SabnzbdClient:
                     if s.get("nzo_id") == nzo_id:
                         self.log(f"DEBUG: SAB queue {nzo_id}: {s.get('status','?')} {s.get('percentage','?')}%")
                         return "downloading"
+                self.log(f"DEBUG: SAB {nzo_id} no longer in queue, checking history")
 
                 # 2. Check History
                 resp = await client.get(f"{self.url}/api", params={"mode": "history", "nzo_id": nzo_id, "apikey": self.api_key, "output": "json"})
@@ -468,8 +469,16 @@ class SabnzbdClient:
                 for s in slots:
                     if s.get("nzo_id") == nzo_id:
                         status = s.get("status", "").lower()
+                        storage = s.get("storage", "?")
+                        fail_msg = s.get("fail_message", "")
+                        self.log(f"DEBUG: SAB history {nzo_id}: status={status!r} storage={storage!r}"
+                                 + (f" fail_message={fail_msg!r}" if fail_msg else ""))
                         if status == "completed": return "completed"
                         if "failed" in status: return "failed"
+                        # Job is in history with a status we don't recognise (e.g. "extracting").
+                        # Treat as still in progress so we keep polling.
+                        return "downloading"
+                self.log(f"DEBUG: SAB {nzo_id} not found in queue OR history — disappeared")
         except asyncio.CancelledError: raise
         except Exception as e:
             self.log(f"SABnzbd status check error: {e}")

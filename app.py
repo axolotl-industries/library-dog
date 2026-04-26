@@ -208,6 +208,11 @@ DOWNLOAD_DIR = "/app/downloads"
 MAX_INDEXER_TRIES = 3
 QBIT_CATEGORY = os.getenv("QBIT_CATEGORY", "books")
 
+# Anna's Archive and Libgen scraping. Off by default — these sources are legally grey
+# in many jurisdictions and the scraping path drags in Playwright/Chromium. Project
+# Gutenberg + Newznab indexers stay always-on regardless.
+ENABLE_GREY_SOURCES = os.getenv("ENABLE_GREY_SOURCES", "").lower() in ("1", "true", "yes")
+
 
 def _library_epubs() -> set:
     base = Path(DOWNLOAD_DIR)
@@ -227,11 +232,12 @@ async def run_background_download(job_id, data):
         QBIT_CATEGORY,
         log,
     )
-    scraper = ScraperEngine(log)
+    scraper = ScraperEngine(log) if ENABLE_GREY_SOURCES else None
     downloader = Downloader(DOWNLOAD_DIR, log)
     gutenberg = GutenbergClient()
 
-    await scraper.start()
+    if scraper:
+        await scraper.start()
     try:
         for b in data['books']:
             log(f"Searching for '{b['title']}'...")
@@ -275,8 +281,8 @@ async def run_background_download(job_id, data):
                         if _library_epubs() - before:
                             break
 
-            # 2. Mirrors
-            if not (_library_epubs() - before):
+            # 2. Mirrors (Anna's Archive / Libgen) — opt-in via ENABLE_GREY_SOURCES.
+            if scraper and not (_library_epubs() - before):
                 mirrors = await scraper.get_mirrors(data['author'], b['title'], b['isbns'])
                 for name, url in mirrors:
                     if await downloader.download(name, url, data['author'], b['title'], b):
@@ -307,7 +313,8 @@ async def run_background_download(job_id, data):
         raise
     finally:
         flatten_downloads(DOWNLOAD_DIR, lambda _: None)
-        await scraper.stop()
+        if scraper:
+            await scraper.stop()
         if job_id in JOBS.jobs:
             if JOBS.jobs[job_id]['status'] == 'running':
                 JOBS.jobs[job_id]['status'] = 'complete'

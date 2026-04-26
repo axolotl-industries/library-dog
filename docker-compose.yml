@@ -39,6 +39,12 @@ services:
       - QBIT_PASS=${QBIT_PASS:-}
       - QBIT_SAVE_PATH=${QBIT_SAVE_PATH:-/app/downloads}
       - QBIT_CATEGORY=${QBIT_CATEGORY:-books}
+
+      # --- Grey sources (off by default) ---
+      # Anna's Archive + Libgen scraping. Legally grey in many jurisdictions; also
+      # drags in a Playwright/Chromium runtime. Project Gutenberg + Newznab indexers
+      # stay always-on regardless of this setting. Set to 'true' to opt in.
+      - ENABLE_GREY_SOURCES=${ENABLE_GREY_SOURCES:-false}
     volumes:
       - ./downloads:/app/downloads
     restart: unless-stopped

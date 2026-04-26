@@ -1032,14 +1032,81 @@ class Downloader:
                 if zipfile.is_zipfile(path):
                     with zipfile.ZipFile(path) as z:
                         if 'mimetype' in z.namelist():
-                            try:
-                                meta = ebookmeta.get_metadata(path)
-                                meta.title, meta.author_list_to_string = title, author
-                                ebookmeta.set_metadata(path, meta)
-                            except: pass
+                            await self._enrich_epub(path, author, title, book_data)
                             self.log(f"Saved to: {path}"); return True
                 if os.path.exists(path): os.remove(path)
             except asyncio.CancelledError: raise
             except Exception:
                 if os.path.exists(path): os.remove(path)
         return False
+
+    async def _enrich_epub(self, path: str, author: str, title: str, book_data: Dict) -> None:
+        """Embed authoritative metadata into the EPUB before it lands in the watched
+        folder Calibre-Web-Automated picks up. Each step is best-effort so a single
+        ebookmeta API quirk doesn't lose the whole download.
+        """
+        try:
+            meta = ebookmeta.get_metadata(path)
+        except Exception as e:
+            self.log(f"Metadata read failed: {e}")
+            return
+
+        try: meta.title = title
+        except Exception: pass
+
+        # Author. ebookmeta exposes both an Author-list setter and (in older versions)
+        # a string-form setter; try the structured one first.
+        try:
+            from ebookmeta.myzipfile import Author  # noqa: F401  (some versions)
+            from ebookmeta import Author as _Author
+            meta.author_list = [_Author(name=author)]
+        except Exception:
+            try: meta.author_list_to_string = author
+            except Exception: pass
+
+        if book_data.get("year"):
+            year_str = str(book_data["year"])
+            try: meta.publish_info.year = year_str
+            except Exception:
+                try: meta.publish_year = year_str
+                except Exception: pass
+
+        isbns = book_data.get("isbns") or []
+        if isbns:
+            try: meta.identifier = isbns[0]
+            except Exception: pass
+
+        try: meta.lang = "en"
+        except Exception: pass
+
+        # Cover. OpenLibrary's covers API serves a 404 for ?default=false when no
+        # cover is on file, so we don't get a 1×1 placeholder embedded in the EPUB.
+        if isbns:
+            cover_bytes = await self._fetch_cover(isbns[0])
+            if cover_bytes:
+                try:
+                    meta.cover_image_data = cover_bytes
+                    meta.cover_file_name = "cover.jpg"
+                except Exception: pass
+
+        try:
+            ebookmeta.set_metadata(path, meta)
+        except Exception as e:
+            self.log(f"Metadata write failed: {e}")
+
+    async def _fetch_cover(self, isbn: str) -> Optional[bytes]:
+        """Pull a cover from OpenLibrary by ISBN, or None if no cover exists."""
+        if not isbn:
+            return None
+        url = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
+                                          headers={"User-Agent": UA}) as client:
+                r = await client.get(url)
+                if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                    return r.content
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        return None

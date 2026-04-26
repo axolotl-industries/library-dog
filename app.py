@@ -214,6 +214,35 @@ QBIT_CATEGORY = os.getenv("QBIT_CATEGORY", "books")
 ENABLE_GREY_SOURCES = os.getenv("ENABLE_GREY_SOURCES", "").lower() in ("1", "true", "yes")
 
 
+# --- Startup diagnostics ---
+# Print which integrations are wired up and confirm the downloads dir is actually
+# writable. The single most common silent-failure mode is a misconfigured volume
+# bind that leaves /app/downloads owned by some other user.
+def _startup_diagnostics():
+    cfg = {
+        "PROWLARR": "set" if os.getenv("PROWLARR_URL") and os.getenv("PROWLARR_KEY") else "unset",
+        "SABNZBD":  "set" if os.getenv("SABNZBD_URL") and os.getenv("SABNZBD_KEY") else "unset",
+        "QBIT":     "set" if os.getenv("QBIT_URL") else "unset",
+        "GREY":     "on" if ENABLE_GREY_SOURCES else "off",
+        "AUTH":     "password" if AUTH_PASSWORD else ("proxy" if TRUSTED_PROXY_AUTH else "open"),
+    }
+    print(f"[library-dog] config: {cfg}", file=sys.stderr)
+
+    base = Path(DOWNLOAD_DIR)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / ".library-dog-write-test"
+        probe.write_text("ok")
+        probe.unlink()
+        st = base.stat()
+        print(f"[library-dog] {DOWNLOAD_DIR}: writable (uid={st.st_uid} gid={st.st_gid} mode={oct(st.st_mode & 0o777)})", file=sys.stderr)
+    except Exception as e:
+        print(f"[library-dog] WARN: {DOWNLOAD_DIR} is NOT writable: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+_startup_diagnostics()
+
+
 def _library_epubs() -> set:
     base = Path(DOWNLOAD_DIR)
     return {p.name for p in base.glob('*.epub')} if base.is_dir() else set()
@@ -242,16 +271,21 @@ async def run_background_download(job_id, data):
         for b in data['books']:
             log(f"Searching for '{b['title']}'...")
             before = _library_epubs()
+            log(f"DEBUG: library has {len(before)} epub(s) before this book")
 
             # 0. Project Gutenberg — public domain books come straight from the source;
             #    if found, skip Usenet and mirrors entirely.
             gut_url = await gutenberg.find_epub(data['author'], b['title'], log)
             if gut_url:
                 await downloader.download("Project Gutenberg", gut_url, data['author'], b['title'], b)
+            after_gut = _library_epubs() - before
+            log(f"DEBUG: post-Gutenberg new files: {sorted(after_gut)}")
 
             # 1. Indexer (Newznab) — try Prowlarr if configured; route NZB→SAB, torrent→qBit.
             #    If the user pre-selected a specific candidate from /candidates, use it directly.
             if not (_library_epubs() - before):
+                if not (os.getenv('PROWLARR_URL') and os.getenv('PROWLARR_KEY')):
+                    log("DEBUG: indexer phase skipped — PROWLARR_URL or PROWLARR_KEY unset")
                 if os.getenv('PROWLARR_URL') and os.getenv('PROWLARR_KEY'):
                     if b.get('nzb_url'):
                         candidates = [{'link': b['nzb_url'], 'kind': b.get('kind', 'nzb')}]
@@ -280,6 +314,9 @@ async def run_background_download(job_id, data):
                         flatten_downloads(DOWNLOAD_DIR, lambda _: None)
                         if _library_epubs() - before:
                             break
+
+            after_idx = _library_epubs() - before
+            log(f"DEBUG: post-indexer new files: {sorted(after_idx)}")
 
             # 2. Mirrors (Anna's Archive / Libgen) — opt-in via ENABLE_GREY_SOURCES.
             if scraper and not (_library_epubs() - before):

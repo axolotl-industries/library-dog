@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, Body, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from core import MetadataFetcher, ScraperEngine, Downloader, NewznabScraper, SabnzbdClient, GutenbergClient, flatten_downloads
+from core import MetadataFetcher, ScraperEngine, Downloader, NewznabScraper, SabnzbdClient, QbitClient, GutenbergClient, flatten_downloads
 
 app = FastAPI()
 
@@ -205,7 +205,8 @@ async def stop_job(job_id: str, u: str = Depends(current_user)):
 
 
 DOWNLOAD_DIR = "/app/downloads"
-MAX_USENET_TRIES = 3
+MAX_INDEXER_TRIES = 3
+QBIT_CATEGORY = os.getenv("QBIT_CATEGORY", "books")
 
 
 def _library_epubs() -> set:
@@ -218,6 +219,14 @@ async def run_background_download(job_id, data):
 
     usenet = NewznabScraper(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), log)
     sab = SabnzbdClient(os.getenv('SABNZBD_URL'), os.getenv('SABNZBD_KEY'), log)
+    qbit = QbitClient(
+        os.getenv('QBIT_URL'),
+        os.getenv('QBIT_USER', ''),
+        os.getenv('QBIT_PASS', ''),
+        os.getenv('QBIT_SAVE_PATH', DOWNLOAD_DIR),
+        QBIT_CATEGORY,
+        log,
+    )
     scraper = ScraperEngine(log)
     downloader = Downloader(DOWNLOAD_DIR, log)
     gutenberg = GutenbergClient()
@@ -234,23 +243,34 @@ async def run_background_download(job_id, data):
             if gut_url:
                 await downloader.download("Project Gutenberg", gut_url, data['author'], b['title'], b)
 
-            # 1. Usenet — if the user pre-selected a specific NZB, use that directly
+            # 1. Indexer (Newznab) — try Prowlarr if configured; route NZB→SAB, torrent→qBit.
+            #    If the user pre-selected a specific candidate from /candidates, use it directly.
             if not (_library_epubs() - before):
                 if os.getenv('PROWLARR_URL') and os.getenv('PROWLARR_KEY'):
                     if b.get('nzb_url'):
-                        nzbs = [{'link': b['nzb_url']}]
+                        candidates = [{'link': b['nzb_url'], 'kind': b.get('kind', 'nzb')}]
                     else:
-                        nzbs = await usenet.search(data['author'], b['title'])
-                    for nzb in nzbs[:MAX_USENET_TRIES]:
-                        nzo_id = await sab.add_url(nzb['link'], f"{data['author']} - {b['title']}")
-                        if not nzo_id:
+                        candidates = await usenet.search(data['author'], b['title'])
+                    for cand in candidates[:MAX_INDEXER_TRIES]:
+                        kind = cand.get('kind', 'nzb')
+                        title = f"{data['author']} - {b['title']}"
+                        if kind == 'nzb':
+                            job = await sab.add_url(cand['link'], title)
+                            poll, cleanup = sab.check_status, sab.delete_from_history
+                        else:
+                            if not qbit.configured():
+                                log("Skipping torrent result — qBittorrent not configured.")
+                                continue
+                            job = await qbit.add(cand['link'], title)
+                            poll, cleanup = qbit.check_status, qbit.delete
+                        if not job:
                             continue
                         while True:
-                            status = await sab.check_status(nzo_id)
+                            status = await poll(job)
                             if status in ("completed", "failed", "unknown"):
                                 break
                             await asyncio.sleep(5)
-                        await sab.delete_from_history(nzo_id)
+                        await cleanup(job)
                         flatten_downloads(DOWNLOAD_DIR, lambda _: None)
                         if _library_epubs() - before:
                             break

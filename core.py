@@ -74,6 +74,27 @@ def _query_title(title: str) -> str:
     return " ".join(t.split())
 
 
+def _classify_link(link: str, enclosure_type: Optional[str]) -> str:
+    """Decide whether a Newznab result is an NZB or a torrent.
+
+    Indexers vary in how reliably they set <enclosure type=...>; trackers
+    proxied through Prowlarr often omit it entirely. So we check the URL
+    shape too: magnet: scheme and .torrent suffix are unambiguous.
+    """
+    et = (enclosure_type or "").lower()
+    lk = (link or "").lower()
+    if lk.startswith("magnet:") or "magnet" in et:
+        return "torrent"
+    if lk.endswith(".torrent") or "bittorrent" in et:
+        return "torrent"
+    if lk.endswith(".nzb") or "nzb" in et:
+        return "nzb"
+    # Unknown format. Default to NZB — historically this was the only mode and
+    # SABnzbd handles a non-NZB by erroring out cleanly, whereas qBittorrent
+    # would silently accept and stall on a non-torrent payload.
+    return "nzb"
+
+
 def flatten_downloads(base_dir: str, log: Callable = print) -> None:
     """Make base_dir a flat directory containing only .epub files.
 
@@ -234,6 +255,7 @@ class NewznabScraper:
                 l = item.findtext('link', default='') or ''
                 enc = item.find('enclosure')
                 enc_url = enc.attrib.get('url') if enc is not None else None
+                enc_type = enc.attrib.get('type') if enc is not None else None
                 size = 0
                 if enc is not None:
                     try: size = int(enc.attrib.get('length') or 0)
@@ -246,13 +268,15 @@ class NewznabScraper:
                             try: size = int(child.attrib.get('value') or 0)
                             except ValueError: pass
                             if size: break
-                items.append({"title": t.strip(), "link": l.strip(), "enclosure": enc_url, "size": size})
+                items.append({"title": t.strip(), "link": l.strip(), "enclosure": enc_url,
+                              "enclosure_type": enc_type, "size": size})
         except ET.ParseError as e:
             self.log(f"XML parse error: {e}; falling back to regex extraction")
             for block in re.findall(r'<item[^>]*>(.*?)</item>', body, re.I | re.S):
                 t = re.search(r'<title[^>]*>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</title>', block, re.I | re.S)
                 l = re.search(r'<link[^>]*>\s*(.*?)\s*</link>', block, re.I | re.S)
                 e_url = re.search(r'<enclosure[^>]+url=["\'](.*?)["\']', block, re.I | re.S)
+                e_type = re.search(r'<enclosure[^>]+type=["\'](.*?)["\']', block, re.I | re.S)
                 e_size = re.search(r'<enclosure[^>]+length=["\'](\d+)["\']', block, re.I | re.S)
                 attr_size = re.search(r'<newznab:attr\s+name=["\']size["\']\s+value=["\'](\d+)["\']', block, re.I)
                 size = 0
@@ -266,6 +290,7 @@ class NewznabScraper:
                     "title": (t.group(1).strip() if t else ''),
                     "link": (l.group(1).strip() if l else ''),
                     "enclosure": (e_url.group(1).strip() if e_url else None),
+                    "enclosure_type": (e_type.group(1).strip() if e_type else None),
                     "size": size,
                 })
         return items
@@ -282,15 +307,18 @@ class NewznabScraper:
         for i in raw:
             enc = i.get("enclosure")
             enc_url = None
+            enc_type = None
             enc_size = 0
             if isinstance(enc, dict):
                 enc_url = enc.get("@url") or enc.get("url")
+                enc_type = enc.get("@type") or enc.get("type")
                 try: enc_size = int(enc.get("@length") or enc.get("length") or 0)
                 except (ValueError, TypeError): enc_size = 0
             elif isinstance(enc, list):
                 for e in enc:
                     if isinstance(e, dict):
                         enc_url = e.get("@url") or e.get("url")
+                        enc_type = e.get("@type") or e.get("type")
                         try: enc_size = int(e.get("@length") or e.get("length") or 0)
                         except (ValueError, TypeError): enc_size = 0
                         if enc_url:
@@ -298,7 +326,8 @@ class NewznabScraper:
             if not enc_size:
                 try: enc_size = int(i.get("size") or 0)
                 except (ValueError, TypeError): enc_size = 0
-            items.append({"title": i.get("title", ""), "link": i.get("link", ""), "enclosure": enc_url, "size": enc_size})
+            items.append({"title": i.get("title", ""), "link": i.get("link", ""),
+                          "enclosure": enc_url, "enclosure_type": enc_type, "size": enc_size})
         return items
 
     def _match(self, items: List[Dict], author: str, title: str) -> List[Dict]:
@@ -327,7 +356,12 @@ class NewznabScraper:
             link = item.get("enclosure") or item.get("link") or ""
             link = link.replace("&amp;", "&")
             if link:
-                results.append({"title": res_title, "link": link, "size": size})
+                results.append({
+                    "title": res_title,
+                    "link": link,
+                    "size": size,
+                    "kind": _classify_link(link, item.get("enclosure_type")),
+                })
         return results
 
     @classmethod
@@ -416,6 +450,153 @@ class SabnzbdClient:
         except Exception as e:
             self.log(f"SABnzbd status check error: {e}")
         return "unknown"
+
+
+class QbitClient:
+    """qBittorrent Web UI client.
+
+    Configured to write into the same DOWNLOAD_DIR Library Dog watches, via the
+    `savepath` param on /torrents/add. That requires the qBittorrent container
+    to share the downloads volume with us — without that, qBit happily accepts
+    the torrent and saves it somewhere we'll never see.
+
+    qBit's API has a quirk: /torrents/add doesn't return the new infohash. We
+    work around that by snapshotting hashes-in-category before the add and
+    diffing afterwards.
+    """
+
+    # qBit state strings split into terminal/non-terminal buckets:
+    # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)#get-torrent-list
+    _DONE_STATES = {"uploading", "stalledUP", "pausedUP", "queuedUP", "checkingUP", "forcedUP"}
+    _FAIL_STATES = {"error", "missingFiles"}
+
+    def __init__(self, url: str, username: str, password: str, save_path: str,
+                 category: str, log_func: Callable):
+        self.url = (url or "").strip().rstrip('/')
+        self.username = username or ""
+        self.password = password or ""
+        self.save_path = save_path
+        self.category = category or "books"
+        self.log = log_func
+        self._cookies = None
+
+    def configured(self) -> bool:
+        return bool(self.url)
+
+    async def _login(self, client: httpx.AsyncClient) -> bool:
+        if self._cookies:
+            client.cookies = self._cookies
+            return True
+        try:
+            r = await client.post(
+                f"{self.url}/api/v2/auth/login",
+                data={"username": self.username, "password": self.password},
+                headers={"Referer": self.url},
+            )
+            if r.status_code == 200 and r.text.strip() == "Ok.":
+                self._cookies = r.cookies
+                return True
+            self.log(f"qBittorrent login failed: HTTP {r.status_code}")
+        except Exception as e:
+            self.log(f"qBittorrent login error: {e}")
+        return False
+
+    async def add(self, url_or_magnet: str, title: str) -> Optional[str]:
+        """Add a torrent or magnet. Returns the infohash, or None on failure."""
+        if not self.configured():
+            return None
+        async with httpx.AsyncClient(timeout=20.0, verify=False, follow_redirects=True) as client:
+            if not await self._login(client):
+                return None
+
+            try:
+                r = await client.get(f"{self.url}/api/v2/torrents/info",
+                                     params={"category": self.category})
+                before = {t.get("hash") for t in r.json()} if r.status_code == 200 else set()
+            except Exception:
+                before = set()
+
+            try:
+                data = {
+                    "urls": url_or_magnet,
+                    "category": self.category,
+                    "paused": "false",
+                    "rename": title,
+                }
+                if self.save_path:
+                    data["savepath"] = self.save_path
+                r = await client.post(f"{self.url}/api/v2/torrents/add", data=data)
+                if r.status_code != 200:
+                    self.log(f"qBittorrent add error: HTTP {r.status_code}")
+                    return None
+                self.log("Added to torrent queue.")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.log(f"qBittorrent add error: {e}")
+                return None
+
+            # qBit can take a moment to register the new torrent; poll briefly.
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                try:
+                    r = await client.get(f"{self.url}/api/v2/torrents/info",
+                                         params={"category": self.category})
+                    if r.status_code == 200:
+                        for t in r.json():
+                            h = t.get("hash")
+                            if h and h not in before:
+                                return h
+                except Exception:
+                    pass
+            self.log("qBittorrent add: torrent didn't appear in category — check qBit logs.")
+            return None
+
+    async def check_status(self, infohash: str) -> str:
+        """Returns 'downloading', 'completed', 'failed', or 'unknown'."""
+        if not self.configured() or not infohash:
+            return "unknown"
+        async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True) as client:
+            if not await self._login(client):
+                return "unknown"
+            try:
+                r = await client.get(f"{self.url}/api/v2/torrents/info",
+                                     params={"hashes": infohash})
+                if r.status_code != 200:
+                    return "unknown"
+                items = r.json()
+                if not items:
+                    return "unknown"
+                state = items[0].get("state", "")
+                if state in self._DONE_STATES:
+                    return "completed"
+                if state in self._FAIL_STATES:
+                    return "failed"
+                return "downloading"
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.log(f"qBittorrent status check error: {e}")
+        return "unknown"
+
+    async def delete(self, infohash: str, delete_files: bool = False) -> None:
+        """Remove the torrent from qBit. We keep the files on disk by default —
+        Library Dog has already moved the EPUB to the flat root by this point."""
+        if not self.configured() or not infohash:
+            return
+        async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True) as client:
+            if not await self._login(client):
+                return
+            try:
+                await client.post(
+                    f"{self.url}/api/v2/torrents/delete",
+                    data={"hashes": infohash, "deleteFiles": "true" if delete_files else "false"},
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
 
 # --- Bibliography fetchers ---
 

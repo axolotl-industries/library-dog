@@ -30,6 +30,15 @@ services:
       # SABnzbd for any NZB results returned by the indexer.
       - SABNZBD_URL=${SABNZBD_URL:-}
       - SABNZBD_KEY=${SABNZBD_KEY:-}
+      # qBittorrent for any torrent results. The qBit container must mount the same
+      # downloads volume Library Dog writes to (or set QBIT_SAVE_PATH to a path that
+      # both containers can see), otherwise qBit downloads land somewhere we can't
+      # ingest.
+      - QBIT_URL=${QBIT_URL:-}
+      - QBIT_USER=${QBIT_USER:-}
+      - QBIT_PASS=${QBIT_PASS:-}
+      - QBIT_SAVE_PATH=${QBIT_SAVE_PATH:-/app/downloads}
+      - QBIT_CATEGORY=${QBIT_CATEGORY:-books}
     volumes:
       - ./downloads:/app/downloads
     restart: unless-stopped

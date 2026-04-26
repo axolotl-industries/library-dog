@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bookfinder — Sign in</title>
+    <title>Library Dog — Sign in</title>
     <style>
         :root {
             --primary: #0071e3;
@@ -94,12 +94,12 @@
 </head>
 <body>
     <div class="card">
-        <h1>📚 Bookfinder</h1>
-        <p class="subtitle">Sign in with your Emby account</p>
+        <h1>Library Dog</h1>
+        <p class="subtitle">Sign in</p>
         <!-- ERROR -->
         <form method="post" action="/login">
-            <input name="username" type="text" placeholder="Username" autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus>
-            <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+            <input name="username" type="text" placeholder="Display name (optional)" autocomplete="username" autocapitalize="off" autocorrect="off">
+            <input name="password" type="password" placeholder="Password" autocomplete="current-password" required autofocus>
             <button type="submit">Sign in</button>
         </form>
     </div>

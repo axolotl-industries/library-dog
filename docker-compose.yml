@@ -7,9 +7,13 @@ services:
       - "80:80"
     environment:
       # --- Auth ---
-      # Point this at your Emby server. Library Dog verifies logins against
-      # /Users/AuthenticateByName, so whoever can log in to Emby can log in here.
-      - EMBY_URL=${EMBY_URL:-http://emby:8096}
+      # Single shared password. If unset and TRUSTED_PROXY_AUTH is also unset, every
+      # route is open — fine on a private LAN, fatal on the public internet.
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-}
+      # Trust Remote-User / X-Forwarded-User from a reverse proxy (Authelia, Authentik,
+      # traefik forward-auth). When set, Library Dog MUST only be reachable through that
+      # proxy, otherwise the header is trivially spoofable.
+      - TRUSTED_PROXY_AUTH=${TRUSTED_PROXY_AUTH:-false}
       # Long random string used to sign session cookies. If unset, a per-process
       # random secret is used and everyone is signed out on each container restart.
       #   openssl rand -base64 48
@@ -17,6 +21,15 @@ services:
       # Set to 'true' once Library Dog is only reachable over HTTPS (e.g. behind
       # Cloudflare). Browsers will then refuse to send the session cookie over http.
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+
+      # --- Indexers / downloaders (optional) ---
+      # Point at a Prowlarr indexer (its per-indexer URL, not Prowlarr's root).
+      # Without these, Library Dog falls back to Project Gutenberg only.
+      - PROWLARR_URL=${PROWLARR_URL:-}
+      - PROWLARR_KEY=${PROWLARR_KEY:-}
+      # SABnzbd for any NZB results returned by the indexer.
+      - SABNZBD_URL=${SABNZBD_URL:-}
+      - SABNZBD_KEY=${SABNZBD_KEY:-}
     volumes:
       - ./downloads:/app/downloads
     restart: unless-stopped

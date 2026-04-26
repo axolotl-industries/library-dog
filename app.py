@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, Body, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from core import MetadataFetcher, ScraperEngine, Downloader, NewznabScraper, SabnzbdClient, EmbyAuth, GutenbergClient, flatten_downloads
+from core import MetadataFetcher, ScraperEngine, Downloader, NewznabScraper, SabnzbdClient, GutenbergClient, flatten_downloads
 
 app = FastAPI()
 
@@ -33,17 +33,54 @@ app.add_middleware(
 
 
 # --- Auth backend ---
+#
+# Three modes, picked by env:
+#   AUTH_PASSWORD set                       → form login, single shared password.
+#   TRUSTED_PROXY_AUTH=true                 → trust Remote-User / X-Forwarded-User from a
+#                                             reverse proxy (Authelia, Authentik, traefik
+#                                             forward-auth). Library Dog MUST only be
+#                                             reachable via that proxy or the header is
+#                                             trivially spoofable.
+#   neither                                 → fully open. Fine for a private LAN; fatal
+#                                             on the public internet. We log a warning.
+#
+# The two are not mutually exclusive: you can set AUTH_PASSWORD as a fallback for direct
+# access while letting proxy-authed users skip the login page entirely.
 
-AUTH = EmbyAuth(os.getenv("EMBY_URL", ""))
-if not AUTH.server_url:
-    print("[bookfinder] WARN: EMBY_URL is unset; no users will be able to log in.", file=sys.stderr)
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
+AUTH_USERNAME_DEFAULT = os.getenv("AUTH_USERNAME", "user")
+TRUSTED_PROXY_AUTH = os.getenv("TRUSTED_PROXY_AUTH", "").lower() in ("1", "true", "yes")
+
+if not AUTH_PASSWORD and not TRUSTED_PROXY_AUTH:
+    print("[library-dog] WARN: no auth configured (AUTH_PASSWORD unset, TRUSTED_PROXY_AUTH=false). "
+          "Every route is open. Set AUTH_PASSWORD or run behind an auth-enforcing reverse proxy "
+          "before exposing this beyond a trusted LAN.", file=sys.stderr)
+
+
+def _proxy_user(request: Request) -> Optional[str]:
+    """Username from a trusted reverse proxy's forward-auth header, or None."""
+    if not TRUSTED_PROXY_AUTH:
+        return None
+    for h in ("Remote-User", "X-Forwarded-User", "X-Authentik-Username"):
+        v = request.headers.get(h)
+        if v:
+            return v
+    return None
 
 
 def current_user(request: Request) -> str:
+    proxy = _proxy_user(request)
+    if proxy:
+        # Cache in the session so EventSource / later requests still resolve a user even
+        # if the proxy header is dropped on a particular request. Cheap, correct.
+        request.session["user"] = proxy
+        return proxy
     user = request.session.get("user")
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return user
+    if user:
+        return user
+    if not AUTH_PASSWORD and not TRUSTED_PROXY_AUTH:
+        return "anonymous"
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # --- Job store ---
@@ -67,6 +104,9 @@ JOBS = JobStore()
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: Optional[str] = None):
+    # No password configured → no login page to show.
+    if not AUTH_PASSWORD:
+        return RedirectResponse("/", status_code=303)
     if request.session.get("user"):
         return RedirectResponse("/", status_code=303)
     with open("static/login.html") as f:
@@ -76,36 +116,42 @@ async def login_page(request: Request, error: Optional[str] = None):
 
 
 @app.post("/login")
-async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
-    user = await AUTH.authenticate(username, password)
-    if user:
-        request.session["user"] = user["name"]
-        request.session["is_admin"] = user.get("is_admin", False)
+async def login_submit(request: Request, password: str = Form(...), username: str = Form("")):
+    if not AUTH_PASSWORD:
         return RedirectResponse("/", status_code=303)
-    print(f"[bookfinder] login failed for username={username!r}", file=sys.stderr)
+    if secrets.compare_digest(password, AUTH_PASSWORD):
+        request.session["user"] = username.strip() or AUTH_USERNAME_DEFAULT
+        return RedirectResponse("/", status_code=303)
+    print("[library-dog] login failed", file=sys.stderr)
     await asyncio.sleep(0.5)  # minor speed bump for credential stuffing
-    return RedirectResponse("/login?error=Invalid+username+or+password", status_code=303)
+    return RedirectResponse("/login?error=Invalid+password", status_code=303)
 
 
 @app.post("/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    if AUTH_PASSWORD:
+        return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/", status_code=303)
 
 
 # --- App routes ---
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    if not request.session.get("user"):
+    proxy = _proxy_user(request)
+    if proxy:
+        request.session["user"] = proxy
+    elif AUTH_PASSWORD and not request.session.get("user"):
         return RedirectResponse("/login", status_code=303)
+    # else: existing session OR fully open (no AUTH_PASSWORD, no TRUSTED_PROXY_AUTH).
     with open("static/index.html") as f:
         return HTMLResponse(f.read(), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 @app.get("/whoami")
-async def whoami(request: Request, u: str = Depends(current_user)):
-    return {"user": u, "is_admin": bool(request.session.get("is_admin"))}
+async def whoami(u: str = Depends(current_user)):
+    return {"user": u}
 
 
 @app.get("/search")
@@ -250,10 +296,10 @@ async def run_background_download(job_id, data):
 
 
 @app.get("/stream/{job_id}")
-async def stream(request: Request, job_id: str, last_idx: int = 0):
-    # EventSource can't set custom headers, so auth relies on the session cookie the browser sends.
-    if not request.session.get("user"):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def stream(request: Request, job_id: str, last_idx: int = 0, u: str = Depends(current_user)):
+    # EventSource can't set custom Authorization headers, but it sends cookies and any
+    # headers a reverse proxy injects (Remote-User, X-Forwarded-User), so current_user
+    # resolves correctly in both password and forward-auth modes.
 
     async def generator():
         idx = last_idx

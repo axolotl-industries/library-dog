@@ -6,6 +6,12 @@ services:
     ports:
       - "80:80"
     environment:
+      # --- Runtime user ---
+      # Match these to the UID/GID of whoever owns your host downloads dir
+      # (and your Calibre / Komga library, if you're sharing the volume).
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+
       # --- Auth ---
       # Single shared password. If unset and TRUSTED_PROXY_AUTH is also unset, every
       # route is open — fine on a private LAN, fatal on the public internet.

@@ -1014,8 +1014,6 @@ class Downloader:
         self.log = log_func
         self.ssl_ctx = create_robust_ssl_context()
         os.makedirs(self.base_dir, exist_ok=True)
-        try: os.chmod(self.base_dir, 0o777)
-        except: pass
 
     async def download(self, mirror: str, url: str, author: str, title: str, book_data: Dict) -> bool:
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
@@ -1031,8 +1029,6 @@ class Downloader:
                         with open(path, "wb") as f:
                             async for chunk in resp.aiter_bytes(): f.write(chunk)
                             f.flush(); os.fsync(f.fileno())
-                try: os.chmod(path, 0o777); os.chown(path, 65534, 65534)
-                except Exception: pass
                 if zipfile.is_zipfile(path):
                     with zipfile.ZipFile(path) as z:
                         if 'mimetype' in z.namelist():
@@ -1040,8 +1036,6 @@ class Downloader:
                                 meta = ebookmeta.get_metadata(path)
                                 meta.title, meta.author_list_to_string = title, author
                                 ebookmeta.set_metadata(path, meta)
-                                try: os.chmod(path, 0o777); os.chown(path, 65534, 65534)
-                                except Exception: pass
                             except: pass
                             self.log(f"Saved to: {path}"); return True
                 if os.path.exists(path): os.remove(path)

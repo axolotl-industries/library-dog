@@ -133,6 +133,19 @@ Setup:
   legally grey in many jurisdictions. Off by default for both
   reasons.
 
+### A note on indie authors
+
+Library Dog leans on Wikidata, OpenLibrary, and major indexers, all of
+which skew toward authors who've already broken through. That means
+Library Dog will fail to find a lot of indie / small-press / self-published
+work. **This is a feature, not a bug.**
+
+If an author isn't notable enough to merit a Wikipedia article, then
+they would also feel a hit if people were to pirate their work. So:
+
+> **If you can't find an author with this app, then they need your
+> money. Fuck you. Buy their work.**
+
 ## Themes
 
 Four themes, persisted in `localStorage`:

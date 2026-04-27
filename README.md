@@ -2,11 +2,14 @@
 
 A self-hosted book discovery + download tool for the *arr stack.
 
-Type an author, pick from the bibliography, and Library Dog finds and
-grabs EPUBs into a flat folder your Calibre / Calibre-Web-Automated /
-Komga library can ingest. NZB results go to SABnzbd; torrent results
-go to qBittorrent. Project Gutenberg is checked first so public-domain
-works come straight from the source.
+Type an author, pick from the bibliography, and Library Dog fetches
+ebooks (EPUB / MOBI / AZW3 / PDF, in your priority order) into a flat
+folder your Calibre / Calibre-Web-Automated / Komga library can
+ingest. Project Gutenberg is checked first; otherwise it aggregates
+across every Prowlarr indexer you've enabled, routing NZB results to
+SABnzbd and torrent / magnet results to qBittorrent. Torrent
+downloads keep seeding after the book lands in the library — useful
+if you're on a private tracker.
 
 > **Heads up — this is largely Claude-assisted ("vibe-coded") code.**
 > It works for the author's setup but should be treated as alpha
@@ -17,21 +20,39 @@ works come straight from the source.
 ## What it does
 
 1. **Author search.** Resolves an author against OpenLibrary →
-   Wikidata, with photo, bio, and a realistic work-count.
-2. **Bibliography.** Pulls a canonical work list from Wikidata SPARQL
-   (Q7725634 / Q571 / Q49084 / Q1144673 — written works, novels,
-   short stories, diaries) so you don't end up with the OpenLibrary
-   "garbage" of every reprint and study guide.
-3. **Per-book search.** For each title:
-   1. Project Gutenberg first. If found, done.
-   2. Newznab indexer (Prowlarr). NZB → SABnzbd, torrent/magnet →
-      qBittorrent, picked from the `<enclosure type=...>` attribute
-      with magnet:/.torrent fallback detection.
-   3. Anna's Archive / Libgen mirrors (opt-in, see below).
-4. **EPUB enrichment.** Title, author, year, ISBN, language, and
-   cover (via OpenLibrary covers API) get embedded into the EPUB
-   before it lands in the watch folder, so Calibre-Web-Automated's
-   auto-import has clean data to work with.
+   Wikidata, with photo, bio, and a realistic work-count. The author
+   whose name you actually typed in is ranked first; fuzzy neighbours
+   from OpenLibrary fall behind.
+2. **Bibliography.** Pulls a canonical work list from Wikidata SPARQL.
+   Two modes, toggleable per-search:
+     - **Strict** — only items typed as one of a known book class
+       (literary work, book, written work, short story, diary, plus
+       their P279 subclass closure). Cleaner output, but Wikidata's
+       editor-by-editor inconsistency means some real books still
+       leak through the cracks.
+     - **Permissive** — any work the author is credited on (P50)
+       that has either a publication date or an ISBN. Catches the
+       strays at the cost of a bit more noise.
+3. **Per-book search.** For each title, tried in order:
+     1. **Project Gutenberg.** If found, done — public-domain works
+        come straight from the source.
+     2. **Aggregated Prowlarr search.** Every indexer Prowlarr knows
+        about is fair game; you enable / disable / prioritise them in
+        the UI. Results are filtered to the user's enabled formats
+        (EPUB / MOBI / AZW3 / PDF) and sorted by format-priority then
+        indexer-priority. NZBs route to SABnzbd; torrents / magnets
+        route to qBittorrent.
+     3. **Anna's Archive / Libgen mirrors** (opt-in, see below).
+4. **Metadata enrichment.** When the downloaded file is an EPUB,
+   title / author / year / ISBN / language / cover (from OpenLibrary's
+   covers API) get embedded before it lands in the watch folder, so
+   CWA's auto-import has clean data. MOBI / AZW3 / PDF are saved
+   as-is — whatever metadata the source carried is what CWA sees.
+5. **Seed-friendly torrent handling.** qBit saves into `/app/torrents`
+   (a separate volume from the library). On completion Library Dog
+   *hardlinks* the book up to `/app/downloads` for CWA to ingest;
+   qBit keeps seeding the original file. MAM / Bibliotik users won't
+   have their ratio tanked.
 
 ## Quick start
 
@@ -46,7 +67,7 @@ services:
       - PGID=1000
       - AUTH_PASSWORD=change-me
       - SESSION_SECRET=$(openssl rand -base64 48)
-      - PROWLARR_URL=http://prowlarr:9696/<indexer-id>
+      - PROWLARR_URL=http://prowlarr:9696        # Prowlarr API root, NOT a per-indexer URL
       - PROWLARR_KEY=...
       - SABNZBD_URL=http://sab:8080
       - SABNZBD_KEY=...
@@ -56,12 +77,18 @@ services:
       - QBIT_PASS=...
     volumes:
       - ./downloads:/app/downloads
+      - ./torrents:/app/torrents                 # only needed when using qBittorrent;
+                                                 # qBit container must mount the same path
     restart: unless-stopped
 ```
 
 `./downloads` is what you point Calibre-Web-Automated's ingest folder
 at. Library Dog flattens everything to a single directory of book
 files — no subfolders, no `.nfo`, no cruft.
+
+`./torrents` is qBittorrent's save path. Both Library Dog and your
+qBittorrent container must mount the same host path here so the
+hardlink-up-to-the-library step has both ends of the link visible.
 
 There's also a `docker-compose.yml` in the repo with every supported
 env var documented inline.
@@ -76,15 +103,21 @@ env var documented inline.
 | `TRUSTED_PROXY_AUTH`   | `false`        | Honor `Remote-User` / `X-Forwarded-User` from a reverse proxy. |
 | `SESSION_SECRET`       | random-per-run | Cookie signing secret. Set this or sessions die on restart. |
 | `SESSION_COOKIE_SECURE`| `false`        | Flip to `true` once you're behind HTTPS. |
-| `PROWLARR_URL`         | unset          | Prowlarr **per-indexer** URL (`/<id>`), not the root. |
+| `PROWLARR_URL`         | unset          | Prowlarr **API root** (`http://host:9696`), not a per-indexer URL. Legacy `/<id>` form is tolerated but limits you to one indexer. |
 | `PROWLARR_KEY`         | unset          | API key from Prowlarr. |
 | `SABNZBD_URL`          | unset          | SABnzbd base URL. |
 | `SABNZBD_KEY`          | unset          | SABnzbd API key. |
 | `QBIT_URL`             | unset          | qBittorrent Web UI base URL. |
 | `QBIT_USER`/`QBIT_PASS`| unset          | qBittorrent credentials. |
-| `QBIT_SAVE_PATH`       | `/app/downloads` | Where qBit writes finished torrents. Must be visible to Library Dog. |
+| `QBIT_SAVE_PATH`       | `/app/torrents` | Where qBit writes finished torrents. Must be visible to both Library Dog and qBit (mount the same host path into both). |
 | `QBIT_CATEGORY`        | `books`        | Category tag for Library Dog torrents. |
 | `ENABLE_GREY_SOURCES`  | `false`        | Opt in to Anna's Archive / Libgen scraping (see below). |
+
+**Per-user settings live in the browser**, not in env vars: which
+indexers are enabled and in what priority order, which formats and in
+what order, the strict/permissive bibliography toggle, and the theme
+are all persisted to `localStorage`. Open the [ INDEXERS ] /
+[ FORMATS ] panels in the UI to tweak them.
 
 ## Auth
 
@@ -105,11 +138,12 @@ Three modes, all derived from env. They can be combined:
 
 ## Calibre-Web-Automated integration
 
-Library Dog's value-add for CWA is that EPUBs land *already
+Library Dog's value-add for CWA is that **EPUBs** land *already
 metadata-tagged*. CWA's auto-import takes whatever's in the file,
-so we make sure title/author/year/ISBN/language/cover are all set
-from authoritative sources (Wikidata, OpenLibrary, Google Books)
-before the file shows up.
+so we make sure title / author / year / ISBN / language / cover are
+all set from authoritative sources (Wikidata, OpenLibrary, Google
+Books) before the file shows up. MOBI / AZW3 / PDF are passed
+through unmodified — what the source carried is what CWA sees.
 
 Setup:
 
@@ -123,10 +157,15 @@ Setup:
 - **Project Gutenberg** — checked first via the Gutendex API.
   Public-domain books only, served straight from
   `gutenberg.org`. Always on.
-- **Newznab indexers via Prowlarr** — anything Prowlarr can proxy
-  shows up here, restricted to category `7020` (Books > eBook).
-  NZB results route to SABnzbd; torrent / magnet results route to
-  qBittorrent (if configured). Always on when `PROWLARR_URL` is set.
+- **Indexers via Prowlarr** — every indexer Prowlarr knows about is
+  enumerated in the [ INDEXERS ] panel. Tick to enable, ↑/↓ to set
+  priority. Searches are aggregated across enabled indexers via
+  Prowlarr's `/api/v1/search`, restricted to category `7020`
+  (Books > eBook), and results are sorted by your format-priority
+  list and indexer-priority list before being tried. NZB results
+  route to SABnzbd; torrent / magnet results route to qBittorrent
+  (if configured). Available when `PROWLARR_URL` and `PROWLARR_KEY`
+  are set.
 - **Anna's Archive / Libgen mirrors** — opt-in via
   `ENABLE_GREY_SOURCES=true`. Drags in a Playwright/Chromium
   runtime to deal with their JS-resolved download links, and is
@@ -208,8 +247,13 @@ this.
 - `verify=False` on outbound HTTPS for the indexer/SAB/qBit clients
   (legacy from running against self-signed Prowlarr behind a
   reverse proxy). To be made env-configurable.
-- Image is large (~700MB) when `ENABLE_GREY_SOURCES=true` keeps
-  Playwright/Chromium in scope.
+- Metadata enrichment is EPUB-only. MOBI / AZW3 / PDF are saved
+  with whatever the source carried.
+- Multi-format support reaches Prowlarr indexer results only —
+  Project Gutenberg + Anna's / Libgen mirrors still only fetch EPUB.
+- Image carries Playwright + Chromium unconditionally (~700MB)
+  even when `ENABLE_GREY_SOURCES=false`. Conditional install is
+  a follow-up.
 
 PRs welcome on any of these.
 

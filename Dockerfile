@@ -15,7 +15,7 @@ RUN groupadd -g 1000 librarydog && \
 WORKDIR /app
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright
-RUN mkdir -p /app/.cache/ms-playwright /app/downloads && \
+RUN mkdir -p /app/.cache/ms-playwright /app/downloads /app/torrents && \
     chown -R librarydog:librarydog /app
 
 COPY --chown=librarydog:librarydog requirements.txt .

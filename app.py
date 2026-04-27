@@ -5,7 +5,10 @@ from typing import Optional
 from fastapi import FastAPI, Request, Body, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from core import MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient, GutenbergClient, flatten_downloads
+from core import (
+    MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient,
+    GutenbergClient, flatten_downloads, hardlink_books_to_root,
+)
 
 app = FastAPI()
 
@@ -237,6 +240,7 @@ async def stop_job(job_id: str, u: str = Depends(current_user)):
 
 
 DOWNLOAD_DIR = "/app/downloads"
+TORRENT_DIR = os.getenv("QBIT_SAVE_PATH", "/app/torrents")
 MAX_INDEXER_TRIES = 3
 QBIT_CATEGORY = os.getenv("QBIT_CATEGORY", "books")
 
@@ -261,7 +265,7 @@ async def run_background_download(job_id, data):
         os.getenv('QBIT_URL'),
         os.getenv('QBIT_USER', ''),
         os.getenv('QBIT_PASS', ''),
-        os.getenv('QBIT_SAVE_PATH', DOWNLOAD_DIR),
+        TORRENT_DIR,
         QBIT_CATEGORY,
         log,
     )
@@ -296,22 +300,38 @@ async def run_background_download(job_id, data):
                         title = f"{data['author']} - {b['title']}"
                         if kind == 'nzb':
                             job = await sab.add_url(cand['link'], title)
-                            poll, cleanup = sab.check_status, sab.delete_from_history
+                            poll = sab.check_status
                         else:
                             if not qbit.configured():
                                 log("Skipping torrent result — qBittorrent not configured.")
                                 continue
                             job = await qbit.add(cand['link'], title)
-                            poll, cleanup = qbit.check_status, qbit.delete
+                            poll = qbit.check_status
                         if not job:
                             continue
+                        final_status = "unknown"
                         while True:
-                            status = await poll(job)
-                            if status in ("completed", "failed", "unknown"):
+                            final_status = await poll(job)
+                            if final_status in ("completed", "failed", "unknown"):
                                 break
                             await asyncio.sleep(5)
-                        await cleanup(job)
-                        flatten_downloads(DOWNLOAD_DIR, lambda _: None)
+
+                        if kind == 'nzb':
+                            # SAB: clear the history entry (non-destructive — files stay)
+                            # and flatten everything that landed in DOWNLOAD_DIR up to root.
+                            await sab.delete_from_history(job)
+                            flatten_downloads(DOWNLOAD_DIR, log)
+                        else:
+                            # qBit: hardlink the book up to the library root so CWA picks
+                            # it up; leave the torrent in qBit to keep seeding (private
+                            # tracker users would not thank us for ratio-tanking them).
+                            # On confirmed failure, evict the torrent + files so qBit
+                            # isn't left with dead entries; on 'unknown', leave it alone
+                            # in case it's still progressing.
+                            if final_status == "completed":
+                                hardlink_books_to_root(TORRENT_DIR, DOWNLOAD_DIR, log)
+                            elif final_status == "failed":
+                                await qbit.delete(job, delete_files=True)
                         if _library_epubs() - before:
                             break
 
@@ -346,7 +366,11 @@ async def run_background_download(job_id, data):
         log("STOPPING: Job was cancelled.")
         raise
     finally:
-        flatten_downloads(DOWNLOAD_DIR, lambda _: None)
+        # Final pass for anything dropped into DOWNLOAD_DIR by the SAB / Gutenberg /
+        # mirrors paths. Skipped for torrents — those stay where qBit put them,
+        # surfaced via hardlink already.
+        flatten_downloads(DOWNLOAD_DIR, log)
+        hardlink_books_to_root(TORRENT_DIR, DOWNLOAD_DIR, log)
         if scraper:
             await scraper.stop()
         if job_id in JOBS.jobs:

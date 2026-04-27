@@ -41,14 +41,17 @@ services:
       # SABnzbd for any NZB results returned by the indexer.
       - SABNZBD_URL=${SABNZBD_URL:-}
       - SABNZBD_KEY=${SABNZBD_KEY:-}
-      # qBittorrent for any torrent results. The qBit container must mount the same
-      # downloads volume Library Dog writes to (or set QBIT_SAVE_PATH to a path that
-      # both containers can see), otherwise qBit downloads land somewhere we can't
-      # ingest.
+      # qBittorrent for any torrent results. qBit's save path is /app/torrents
+      # by default — a SEPARATE volume from /app/downloads. Why: a torrent's
+      # files have to stay where qBit put them in order to keep seeding (private
+      # tracker users will have ratio rules), so we leave them there and
+      # hardlink the books up to /app/downloads. The qBittorrent container must
+      # also mount the same path (e.g. /downloads inside qBit pointing at the
+      # ./torrents host dir).
       - QBIT_URL=${QBIT_URL:-}
       - QBIT_USER=${QBIT_USER:-}
       - QBIT_PASS=${QBIT_PASS:-}
-      - QBIT_SAVE_PATH=${QBIT_SAVE_PATH:-/app/downloads}
+      - QBIT_SAVE_PATH=${QBIT_SAVE_PATH:-/app/torrents}
       - QBIT_CATEGORY=${QBIT_CATEGORY:-books}
 
       # --- Grey sources (off by default) ---
@@ -57,5 +60,11 @@ services:
       # stay always-on regardless of this setting. Set to 'true' to opt in.
       - ENABLE_GREY_SOURCES=${ENABLE_GREY_SOURCES:-false}
     volumes:
+      # Library root — what Calibre / Calibre-Web-Automated ingests from. SAB
+      # and Project Gutenberg / mirror downloads land here directly, torrent
+      # downloads are hardlinked in from /app/torrents on completion.
       - ./downloads:/app/downloads
+      # Torrent seed root — qBittorrent must mount the same host path. Skip
+      # this volume entirely if you're not using qBit.
+      - ./torrents:/app/torrents
     restart: unless-stopped

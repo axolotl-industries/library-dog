@@ -17,6 +17,11 @@ from urllib.parse import quote, urljoin
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# File extensions Library Dog will surface as "books" in the library root.
+# The multi-format support extends this; for now hardlink_books_to_root and
+# flatten_downloads consult it.
+BOOK_EXTENSIONS = {".epub"}
+
 def _ascii_fold(text: str) -> str:
     """Strip diacritical marks for indexer/library search queries (å→a, ø→o, ü→u, etc.)."""
     return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
@@ -70,6 +75,42 @@ def _query_title(title: str) -> str:
     t = re.sub(r'[^\w\s]', '', t)
     t = ' '.join(_NUM_WORDS.get(w, w) for w in t.split())
     return " ".join(t.split())
+
+
+def hardlink_books_to_root(src_dir: str, dest_dir: str, log: Callable = print) -> None:
+    """Surface every book file under src_dir as a hardlink in dest_dir.
+
+    Used after a torrent completes: qBittorrent keeps seeding from src_dir,
+    Calibre-Web-Automated picks up the hardlinked copy from dest_dir. No files
+    are moved or deleted — same inode, two names.
+
+    Falls back to a regular copy when hardlinking fails (cross-filesystem mount,
+    fs without hardlink support). The seed survives either way.
+    """
+    src = Path(src_dir)
+    dest = Path(dest_dir)
+    if not src.is_dir():
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in src.rglob('*'):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in BOOK_EXTENSIONS:
+            continue
+        target = dest / path.name
+        if target.exists():
+            # Already surfaced from a prior pass. Don't disambiguate; that just
+            # accumulates duplicate-but-suffixed entries in the library.
+            continue
+        try:
+            os.link(str(path), str(target))
+            log(f"Hardlinked {path.name} into the library root")
+        except OSError as e:
+            try:
+                shutil.copy2(str(path), str(target))
+                log(f"Copied {path.name} into the library root (hardlink unavailable: {e})")
+            except Exception as e2:
+                log(f"Failed to surface {path.name}: {e2}")
 
 
 def flatten_downloads(base_dir: str, log: Callable = print) -> None:

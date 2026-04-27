@@ -654,48 +654,89 @@ class WikidataBibliography:
         except: pass
         return 0
 
-    async def fetch(self, author_name: str) -> List[Dict]:
+    async def fetch(self, author_name: str, mode: str = "strict") -> List[Dict]:
+        """Pull an author's bibliography from Wikidata.
+
+        Two modes:
+          'strict'     — only items typed as one of our known book-ish classes
+                         (literary work / book / written work / short story /
+                         diary, plus their P279 subclass closure). Cleaner
+                         results, but Wikidata's class hierarchy is
+                         inconsistent enough that some real books leak through
+                         the cracks.
+          'permissive' — drop the type filter, trust P50 (author), and noise-
+                         filter app-side: keep only items that have a
+                         publication date (P577) or an ISBN (P212/P957). That
+                         's the "this thing was published as a discrete book"
+                         proxy.
+        """
         author_id = await self._get_author_id(author_name)
         if not author_id:
             return []
 
-        self.log(f"Fetching bibliography for {author_name}...")
+        self.log(f"Fetching bibliography for {author_name} ({mode} mode)...")
 
-        # Broadened to include books, poems, and diaries
-        query = f"""
-        SELECT DISTINCT ?itemLabel ?date WHERE {{
-          ?item wdt:P50 wd:{author_id}.
-          ?item wdt:P31/wdt:P279* ?type .
-          VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
-          SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
-        }}
-        ORDER BY ?date
-        """
-        
+        if mode == "permissive":
+            query = f"""
+            SELECT DISTINCT ?item ?itemLabel ?date ?isbn WHERE {{
+              ?item wdt:P50 wd:{author_id}.
+              OPTIONAL {{ ?item wdt:P577 ?date . }}
+              OPTIONAL {{ ?item wdt:P212 ?isbn . }}
+              OPTIONAL {{ ?item wdt:P957 ?isbn . }}
+              SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+            }}
+            ORDER BY ?date
+            """
+        else:
+            query = f"""
+            SELECT DISTINCT ?item ?itemLabel ?date ?isbn WHERE {{
+              ?item wdt:P50 wd:{author_id}.
+              ?item wdt:P31/wdt:P279* ?type .
+              VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
+              OPTIONAL {{ ?item wdt:P577 ?date . }}
+              OPTIONAL {{ ?item wdt:P212 ?isbn . }}
+              OPTIONAL {{ ?item wdt:P957 ?isbn . }}
+              SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+            }}
+            ORDER BY ?date
+            """
+
         headers = {"User-Agent": self.USER_AGENT, "Accept": "application/sparql-results+json"}
         try:
             resp = await self.client.get(self.SPARQL_URL, params={"query": query}, headers=headers, timeout=60.0)
             if resp.status_code != 200:
                 self.log(f"Wikidata SPARQL error: {resp.status_code}")
                 return []
-            
+
             data = resp.json()
             bindings = data.get("results", {}).get("bindings", [])
-            
+
             books = {}
             for b in bindings:
                 title = b.get("itemLabel", {}).get("value")
                 if not title or re.match(r"^Q\d+$", title):
                     continue
-                
+
                 year_str = b.get("date", {}).get("value", "")
                 year = int(year_str[:4]) if re.match(r"^\d{4}", year_str) else None
-                
+                isbn = b.get("isbn", {}).get("value", "").replace("-", "").strip() or None
+
+                # Permissive-mode noise filter: skip anything without a publication
+                # date OR an ISBN. That weeds out individual letters, blog posts,
+                # forewords-to-other-people's-books, and the like.
+                if mode == "permissive" and not year and not isbn:
+                    continue
+
                 norm = normalize_text(title)
-                # Keep the earliest year found
-                if norm not in books or (year and (books[norm]["year"] is None or year < books[norm]["year"])):
-                    books[norm] = {"title": title, "year": year, "isbns": []}
-            
+                existing = books.get(norm)
+                if not existing:
+                    books[norm] = {"title": title, "year": year, "isbns": [isbn] if isbn else []}
+                else:
+                    if year and (existing["year"] is None or year < existing["year"]):
+                        existing["year"] = year
+                    if isbn and isbn not in existing["isbns"]:
+                        existing["isbns"].append(isbn)
+
             return sorted(books.values(), key=lambda x: (x.get("year") or 9999, x.get("title", "")))
         except Exception as e:
             self.log(f"Wikidata SPARQL error: {e}")
@@ -832,11 +873,12 @@ class MetadataFetcher:
         except: pass
         return author_data
 
-    async def get_author_books(self, author_id: str, author_name: str = "", query: Optional[str] = None) -> List[Dict]:
-        """Return the author's English fiction bibliography."""
+    async def get_author_books(self, author_id: str, author_name: str = "",
+                                query: Optional[str] = None, mode: str = "strict") -> List[Dict]:
+        """Return the author's bibliography. mode is forwarded to Wikidata."""
         books: List[Dict] = []
         if author_name:
-            books = await WikidataBibliography(self.client).fetch(author_name)
+            books = await WikidataBibliography(self.client).fetch(author_name, mode=mode)
 
         if not books and author_name:
             books = await GoogleBooksBibliography(self.client).fetch(author_name)

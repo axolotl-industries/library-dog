@@ -167,10 +167,11 @@ async def search(author: str, query: str = None, u: str = Depends(current_user))
 
 
 @app.get("/author_books")
-async def author_books(author_id: str, author_name: str, query: str = None, u: str = Depends(current_user)):
+async def author_books(author_id: str, author_name: str, query: str = None,
+                       mode: str = "strict", u: str = Depends(current_user)):
     fetcher = MetadataFetcher()
     try:
-        books = await fetcher.get_author_books(author_id, author_name, query)
+        books = await fetcher.get_author_books(author_id, author_name, query, mode=mode)
         return {"author": author_name, "books": books}
     finally:
         await fetcher.aclose()

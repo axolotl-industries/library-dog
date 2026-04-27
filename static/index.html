@@ -415,7 +415,13 @@
             <input type="text" id="author" placeholder="Author name" onkeyup="if(event.key==='Enter') search()">
             <button id="search-btn" onclick="search()" style="max-width:160px;">Search</button>
         </div>
-        <input type="text" id="query" placeholder="Filter title (optional)" style="margin-top:12px;" onkeyup="if(event.key==='Enter') search()">
+        <div style="display:flex; gap:12px; margin-top:12px; align-items:center;">
+            <input type="text" id="query" placeholder="Filter title (optional)" style="flex:1;" onkeyup="if(event.key==='Enter') search()">
+            <select id="mode-select" onchange="setMode(this.value)" title="Bibliography mode" style="width:auto; padding:12px 10px;">
+                <option value="strict">Strict</option>
+                <option value="permissive">Permissive</option>
+            </select>
+        </div>
     </div>
 
     <div id="author-select-card" class="card" data-card="authors" data-label=" [ AUTHORS ] " style="display:none;">
@@ -457,6 +463,26 @@
                 const saved = localStorage.getItem(THEME_KEY);
                 if (saved) setTheme(saved);
             } catch (_) {}
+        })();
+
+        // --- Bibliography mode persistence ---
+        // Strict: Wikidata's typed bibliography (cleaner, may miss oddly-classified works).
+        // Permissive: trust the author link, filter for items that have a publication
+        // date or ISBN (broader, catches misclassified books).
+        const MODE_KEY = 'librarydog.mode';
+        function setMode(name) {
+            const m = (name === 'permissive') ? 'permissive' : 'strict';
+            try { localStorage.setItem(MODE_KEY, m); } catch (_) {}
+            const sel = document.getElementById('mode-select');
+            if (sel) sel.value = m;
+        }
+        function getMode() {
+            try { return localStorage.getItem(MODE_KEY) || 'strict'; } catch (_) { return 'strict'; }
+        }
+        (function restoreMode() {
+            const saved = getMode();
+            const sel = document.getElementById('mode-select');
+            if (sel) sel.value = saved;
         })();
 
         // --- App state ---
@@ -525,7 +551,8 @@
 
             try {
                 const q = document.getElementById('query').value;
-                const res = await apiFetch(`/author_books?author_id=${encodeURIComponent(id)}&author_name=${encodeURIComponent(name)}&query=${encodeURIComponent(q)}`);
+                const mode = getMode();
+                const res = await apiFetch(`/author_books?author_id=${encodeURIComponent(id)}&author_name=${encodeURIComponent(name)}&query=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`);
                 const data = await res.json();
 
                 currentAuthor = data.author; currentBooks = data.books;

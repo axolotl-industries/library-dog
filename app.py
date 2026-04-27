@@ -1,5 +1,12 @@
 import asyncio, html as htmllib, os, re, secrets, sys, time, uuid
 from pathlib import Path
+
+# Print this before any heavy imports so users see *something* in `docker
+# logs` immediately on cold start, instead of silent buffer-buildup followed
+# by everything appearing at once. PYTHONUNBUFFERED=1 in the image makes the
+# rest of stdout/stderr flush in real time.
+print("[library-dog] starting...", file=sys.stderr, flush=True)
+
 import uvicorn
 from typing import Optional
 from fastapi import FastAPI, Request, Body, Form, Depends, HTTPException

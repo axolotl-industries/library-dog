@@ -14,6 +14,13 @@ RUN groupadd -g 1000 librarydog && \
 
 WORKDIR /app
 
+# Python's stdout/stderr is block-buffered when attached to a pipe (which is
+# what `docker logs` is). Without this, uvicorn's startup banner and any of
+# our log lines sit in the buffer until 4–8KB accumulates, making it look
+# like the container is hanging for a minute or two on cold starts.
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=UTF-8
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright
 RUN mkdir -p /app/.cache/ms-playwright /app/downloads /app/torrents && \
     chown -R librarydog:librarydog /app

@@ -1,15 +1,26 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="neutral">
+<html lang="en" data-theme="dark" data-chrome="flat">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Library Dog</title>
     <script>
       // Apply saved theme before paint to avoid a flash of the default theme.
-      try { var _t = localStorage.getItem('librarydog.theme'); if (_t) document.documentElement.setAttribute('data-theme', _t); } catch (_) {}
+      // Also normalise legacy theme names from earlier builds, and tag the
+      // matching chrome family so the structural CSS picks up correctly.
+      (function(){
+        try {
+          var t = localStorage.getItem('librarydog.theme');
+          var migrate = {neutral:'dark','bbs-green':'at','bbs-amber':'xt','bbs-ega':'386'};
+          if (t && migrate[t]) { t = migrate[t]; localStorage.setItem('librarydog.theme', t); }
+          var chrome = {dark:'flat',light:'flat',at:'bbs',xt:'bbs','386':'bbs','95':'win95',xp:'winxp'};
+          if (t) document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.setAttribute('data-chrome', chrome[t] || 'flat');
+        } catch (_) {}
+      })();
     </script>
     <style>
-        /* --- Neutral dark (default) --- */
+        /* --- Dark (default) --- */
         :root {
             --bg: #1a1d21;
             --card-bg: #252830;
@@ -33,8 +44,26 @@
             --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
         }
 
-        /* --- BBS Green (retro) --- */
-        :root[data-theme="bbs-green"] {
+        /* --- Light --- */
+        :root[data-theme="light"] {
+            --bg: #f5f5f7;
+            --card-bg: #ffffff;
+            --card-border: #d2d2d7;
+            --text: #1d1d1f;
+            --text-muted: #86868b;
+            --primary: #0071e3;
+            --primary-fg: #ffffff;
+            --primary-hover: #0062c4;
+            --success: #34c759;
+            --error: #d93025;
+            --warning: #f59e0b;
+            --info: #1976d2;
+            --accent: #8b5cf6;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        }
+
+        /* --- AT (BBS green) --- */
+        :root[data-theme="at"] {
             --bg: #000000;
             --card-bg: #000000;
             --card-border: #00ff00;
@@ -53,8 +82,8 @@
             --shadow: none;
         }
 
-        /* --- BBS Amber (retro) --- */
-        :root[data-theme="bbs-amber"] {
+        /* --- XT (BBS amber) --- */
+        :root[data-theme="xt"] {
             --bg: #0a0500;
             --card-bg: #0a0500;
             --card-border: #ffb000;
@@ -73,11 +102,11 @@
             --shadow: none;
         }
 
-        /* --- BBS EGA/VGA (retro, full ANSI 16-color on black) ---
+        /* --- 386 (BBS EGA/VGA, full ANSI 16-color on black) ---
            The defining look: black background, white body text, and each
            card frame in a different ANSI hue (cyan, yellow, green, magenta).
            Per-card colours come via [data-card="..."] further down. */
-        :root[data-theme="bbs-ega"] {
+        :root[data-theme="386"] {
             --bg: #000000;
             --card-bg: #000000;
             --card-border: #ffffff;   /* default frame; cards override per-label */
@@ -97,18 +126,62 @@
         }
         /* Per-card hue assignments. Each main viewbox gets its own ANSI accent so
            the screen reads as the multi-coloured BBS aesthetic, not one flat tone. */
-        :root[data-theme="bbs-ega"] .card[data-card="search"]      { border-color: #55ffff; }
-        :root[data-theme="bbs-ega"] .card[data-card="search"]::before  { color: #55ffff; }
-        :root[data-theme="bbs-ega"] .card[data-card="authors"]     { border-color: #ffff55; }
-        :root[data-theme="bbs-ega"] .card[data-card="authors"]::before { color: #ffff55; }
-        :root[data-theme="bbs-ega"] .card[data-card="results"]     { border-color: #55ff55; }
-        :root[data-theme="bbs-ega"] .card[data-card="results"]::before { color: #55ff55; }
-        :root[data-theme="bbs-ega"] .card[data-card="sources"]     { border-color: #ff55ff; }
-        :root[data-theme="bbs-ega"] .card[data-card="sources"]::before { color: #ff55ff; }
-        :root[data-theme="bbs-ega"] .card[data-card="session"]     { border-color: #aaaaaa; }
-        :root[data-theme="bbs-ega"] .card[data-card="session"]::before { color: #aaaaaa; }
-        :root[data-theme="bbs-ega"] h3 { color: var(--info); }
-        :root[data-theme="bbs-ega"] th { color: var(--warning); background: rgba(255, 255, 85, 0.10); }
+        :root[data-theme="386"] .card[data-card="search"]      { border-color: #55ffff; }
+        :root[data-theme="386"] .card[data-card="search"]::before  { color: #55ffff; }
+        :root[data-theme="386"] .card[data-card="authors"]     { border-color: #ffff55; }
+        :root[data-theme="386"] .card[data-card="authors"]::before { color: #ffff55; }
+        :root[data-theme="386"] .card[data-card="results"]     { border-color: #55ff55; }
+        :root[data-theme="386"] .card[data-card="results"]::before { color: #55ff55; }
+        :root[data-theme="386"] .card[data-card="sources"]     { border-color: #ff55ff; }
+        :root[data-theme="386"] .card[data-card="sources"]::before { color: #ff55ff; }
+        :root[data-theme="386"] .card[data-card="session"]     { border-color: #aaaaaa; }
+        :root[data-theme="386"] .card[data-card="session"]::before { color: #aaaaaa; }
+        :root[data-theme="386"] h3 { color: var(--info); }
+        :root[data-theme="386"] th { color: var(--warning); background: rgba(255, 255, 85, 0.10); }
+
+        /* --- 95 (Windows 95) ---
+           Teal desktop, gray windows with raised bevels, MS Sans Serif. Square
+           corners, button bevels that invert on :active. */
+        :root[data-theme="95"] {
+            --bg: #008080;
+            --card-bg: #c0c0c0;
+            --card-border: #c0c0c0;
+            --text: #000000;
+            --text-muted: #404040;
+            --primary: #000080;          /* Win95 title bar blue */
+            --primary-fg: #ffffff;
+            --primary-hover: #1084d0;
+            --success: #008000;
+            --error: #aa0000;
+            --warning: #aa5500;
+            --info: #000080;
+            --accent: #800080;
+            --radius: 0;
+            --border-width: 0;            /* bevels handled by box-shadow on chrome */
+            --shadow: none;
+        }
+
+        /* --- XP (Windows XP "Luna") ---
+           Sky-blue desktop, white windows with rounded corners, Tahoma, gradient
+           buttons. Card label strip rendered as a blue gradient title bar. */
+        :root[data-theme="xp"] {
+            --bg: #3a6ea5;               /* Bliss-ish blue */
+            --card-bg: #ffffff;
+            --card-border: #0054e3;
+            --text: #000000;
+            --text-muted: #555555;
+            --primary: #316ac5;
+            --primary-fg: #ffffff;
+            --primary-hover: #2659b3;
+            --success: #2e8b57;
+            --error: #cc0000;
+            --warning: #d97706;
+            --info: #316ac5;
+            --accent: #f59e0b;
+            --radius: 6px;
+            --border-width: 1px;
+            --shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+        }
 
         body {
             font-family: var(--font-body);
@@ -122,12 +195,12 @@
         }
 
         /* BBS-only chrome: monospace, uppercase, scanlines */
-        :root[data-theme^="bbs-"] body {
+        :root[data-chrome="bbs"] body {
             font-family: var(--font-mono);
             text-transform: uppercase;
             padding: 15px;
         }
-        :root[data-theme^="bbs-"] body::before {
+        :root[data-chrome="bbs"] body::before {
             content: " ";
             position: fixed;
             top: 0; left: 0; bottom: 0; right: 0;
@@ -149,7 +222,7 @@
             justify-content: space-between;
             gap: 16px;
         }
-        :root[data-theme^="bbs-"] h1 {
+        :root[data-chrome="bbs"] h1 {
             border-bottom-width: var(--border-width);
             border-bottom-color: var(--primary);
             letter-spacing: 2px;
@@ -172,11 +245,25 @@
             white-space: pre;
         }
         @media (min-width: 720px) {
-            :root[data-theme^="bbs-"] .title-text { display: none; }
-            :root[data-theme^="bbs-"] .title-ascii { display: block; }
+            :root[data-chrome="bbs"] .title-text { display: none; }
+            :root[data-chrome="bbs"] .title-ascii { display: block; }
         }
 
         .header-controls { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: normal; }
+
+        /* Ko-fi heart link. SVG inherits color via fill=currentColor, so it
+           tracks the active theme's --primary. Fixed-width hit target. */
+        .kofi-heart {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px; height: 32px;
+            color: var(--primary);
+            text-decoration: none;
+            transition: transform 0.15s, color 0.15s;
+        }
+        .kofi-heart svg { width: 18px; height: 18px; }
+        .kofi-heart:hover { transform: scale(1.15); color: var(--primary-hover); }
 
         .card {
             background: var(--card-bg);
@@ -187,7 +274,7 @@
             box-shadow: var(--shadow);
             position: relative;
         }
-        :root[data-theme^="bbs-"] .card::before {
+        :root[data-chrome="bbs"] .card::before {
             content: attr(data-label);
             position: absolute;
             top: -12px;
@@ -213,8 +300,8 @@
             box-sizing: border-box;
             outline: none;
         }
-        :root[data-theme^="bbs-"] input,
-        :root[data-theme^="bbs-"] select {
+        :root[data-chrome="bbs"] input,
+        :root[data-chrome="bbs"] select {
             border-width: 1px;
             border-color: var(--primary);
         }
@@ -235,7 +322,7 @@
         }
         button:hover { background: var(--primary-hover); }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        :root[data-theme^="bbs-"] button { font-weight: bold; letter-spacing: 1px; }
+        :root[data-chrome="bbs"] button { font-weight: bold; letter-spacing: 1px; }
 
         .author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 12px; }
         .author-card {
@@ -247,9 +334,9 @@
             transition: border-color 0.15s, background 0.15s;
         }
         .author-card:hover { border-color: var(--primary); }
-        :root[data-theme^="bbs-"] .author-card:hover { background: rgba(0, 255, 0, 0.08); }
-        :root[data-theme="bbs-amber"] .author-card:hover { background: rgba(255, 176, 0, 0.10); }
-        :root[data-theme="bbs-ega"] .author-card:hover { background: rgba(255, 255, 85, 0.10); }
+        :root[data-chrome="bbs"] .author-card:hover { background: rgba(0, 255, 0, 0.08); }
+        :root[data-theme="xt"] .author-card:hover { background: rgba(255, 176, 0, 0.10); }
+        :root[data-theme="386"] .author-card:hover { background: rgba(255, 255, 85, 0.10); }
 
         .author-header { display: flex; gap: 12px; align-items: flex-start; }
         .author-photo {
@@ -258,12 +345,12 @@
             border-radius: 4px;
             object-fit: cover;
         }
-        :root[data-theme^="bbs-"] .author-photo {
+        :root[data-chrome="bbs"] .author-photo {
             filter: grayscale(1) sepia(1) hue-rotate(60deg) brightness(1.15);
             border-radius: 0;
         }
-        :root[data-theme="bbs-amber"] .author-photo { filter: grayscale(1) sepia(1) hue-rotate(0deg) brightness(1.1); }
-        :root[data-theme="bbs-ega"] .author-photo { filter: none; border-color: var(--card-border); }
+        :root[data-theme="xt"] .author-photo { filter: grayscale(1) sepia(1) hue-rotate(0deg) brightness(1.1); }
+        :root[data-theme="386"] .author-photo { filter: none; border-color: var(--card-border); }
         .author-info h4 { margin: 0; font-size: 17px; }
         .author-info p { margin: 3px 0; font-size: 13px; color: var(--text-muted); }
         .author-bio { font-size: 13px; margin: 10px 0; color: var(--text-muted); line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
@@ -272,14 +359,14 @@
         .table-container { width: 100%; overflow-x: auto; border: 1px solid var(--card-border); border-radius: var(--radius); margin-top: 8px; }
         table { width: 100%; border-collapse: collapse; min-width: 400px; }
         th { background: rgba(255, 255, 255, 0.03); text-align: left; padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 13px; color: var(--text-muted); }
-        :root[data-theme^="bbs-"] th { background: rgba(0, 255, 0, 0.08); color: var(--text); }
-        :root[data-theme="bbs-amber"] th { background: rgba(255, 176, 0, 0.10); }
+        :root[data-chrome="bbs"] th { background: rgba(0, 255, 0, 0.08); color: var(--text); }
+        :root[data-theme="xt"] th { background: rgba(255, 176, 0, 0.10); }
         td { padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 14px; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
-        :root[data-theme^="bbs-"] tr:hover td { background: rgba(0, 255, 0, 0.06); }
-        :root[data-theme="bbs-amber"] tr:hover td { background: rgba(255, 176, 0, 0.08); }
-        :root[data-theme="bbs-ega"] tr:hover td { background: rgba(85, 255, 255, 0.10); }
+        :root[data-chrome="bbs"] tr:hover td { background: rgba(0, 255, 0, 0.06); }
+        :root[data-theme="xt"] tr:hover td { background: rgba(255, 176, 0, 0.08); }
+        :root[data-theme="386"] tr:hover td { background: rgba(85, 255, 255, 0.10); }
 
         .chk-col { width: 40px; text-align: center; }
         .kind-badge {
@@ -294,7 +381,7 @@
         }
         .kind-badge.torrent { background: rgba(179, 157, 219, 0.15); color: var(--accent); }
         .kind-badge.usenet  { background: rgba(82, 148, 226, 0.15); color: var(--info); }
-        :root[data-theme^="bbs-"] .kind-badge { border-radius: 0; }
+        :root[data-chrome="bbs"] .kind-badge { border-radius: 0; }
 
         details > summary {
             cursor: pointer;
@@ -346,7 +433,7 @@
             gap: 12px;
         }
         .session-title { font-size: 14px; font-weight: 600; }
-        :root[data-theme^="bbs-"] .session-title { letter-spacing: 1px; }
+        :root[data-chrome="bbs"] .session-title { letter-spacing: 1px; }
         .session-btns { display: flex; gap: 8px; flex-shrink: 0; }
 
         .btn-inline {
@@ -369,11 +456,11 @@
         .progress-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 8px; font-size: 13px; }
         .progress-bar { flex: 1; height: 6px; background: var(--card-border); border-radius: 3px; overflow: hidden; }
         .progress-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
-        :root[data-theme^="bbs-"] .progress-bar { height: 14px; border-radius: 0; font-family: var(--font-mono); }
-        :root[data-theme^="bbs-"] .progress-fill { display: none; }
+        :root[data-chrome="bbs"] .progress-bar { height: 14px; border-radius: 0; font-family: var(--font-mono); }
+        :root[data-chrome="bbs"] .progress-fill { display: none; }
         .progress-bbs { display: none; font-family: var(--font-mono); }
-        :root[data-theme^="bbs-"] .progress-bbs { display: inline; }
-        :root[data-theme^="bbs-"] .progress-row .progress-bar { display: none; }
+        :root[data-chrome="bbs"] .progress-bbs { display: inline; }
+        :root[data-chrome="bbs"] .progress-row .progress-bar { display: none; }
 
         .session-log {
             background: rgba(0, 0, 0, 0.25);
@@ -386,7 +473,7 @@
             border: 1px solid var(--card-border);
             border-radius: var(--radius);
         }
-        :root[data-theme^="bbs-"] .session-log { background: #000; border-color: var(--card-border); border-radius: 0; }
+        :root[data-chrome="bbs"] .session-log { background: #000; border-color: var(--card-border); border-radius: 0; }
         .log-entry { margin-bottom: 4px; display: flex; gap: 10px; align-items: flex-start; line-height: 1.4; }
         .log-icon { flex-shrink: 0; color: var(--text-muted); }
         .log-msg { word-break: break-word; }
@@ -427,6 +514,181 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* =============================================================
+           Win95 chrome — applies whenever data-chrome="win95" is set on
+           <html> (currently theme=95 only). Beveled buttons / cards / inputs
+           via box-shadow tricks, MS Sans Serif, square corners.
+           ============================================================= */
+        :root[data-chrome="win95"] body {
+            font-family: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, sans-serif;
+        }
+        :root[data-chrome="win95"] h1 {
+            border-bottom: 1px solid #404040;
+            padding-bottom: 8px;
+            font-size: 20px;
+        }
+        /* Card = a Win95 window: gray with raised bevel + a blue title bar
+           strip in place of the floating data-label tag the BBS chrome uses. */
+        :root[data-chrome="win95"] .card {
+            background: var(--card-bg);
+            border: none;
+            padding: 12px;
+            box-shadow:
+                inset 1px 1px 0 #ffffff,
+                inset -1px -1px 0 #404040,
+                inset 2px 2px 0 #dfdfdf,
+                inset -2px -2px 0 #808080;
+        }
+        :root[data-chrome="win95"] .card[data-label]::before {
+            content: attr(data-label);
+            display: block;
+            margin: -12px -12px 10px -12px;
+            background: linear-gradient(to right, #000080 0%, #1084d0 100%);
+            color: #ffffff;
+            font-weight: bold;
+            padding: 4px 8px;
+            font-size: 13px;
+            position: static;
+            top: auto; left: auto;
+            text-transform: none;
+        }
+        /* Inputs: sunken bevel (mirror image of the raised card). */
+        :root[data-chrome="win95"] input,
+        :root[data-chrome="win95"] select,
+        :root[data-chrome="win95"] textarea {
+            background: #ffffff;
+            color: #000000;
+            border: none;
+            box-shadow:
+                inset 1px 1px 0 #404040,
+                inset -1px -1px 0 #ffffff,
+                inset 2px 2px 0 #808080,
+                inset -2px -2px 0 #dfdfdf;
+            padding: 6px 8px;
+            font-family: inherit;
+        }
+        /* Buttons: raised bevel; pressed bevel on :active. */
+        :root[data-chrome="win95"] button {
+            background: #c0c0c0;
+            color: #000000;
+            border: none;
+            border-radius: 0;
+            font-family: inherit;
+            font-weight: normal;
+            box-shadow:
+                inset 1px 1px 0 #ffffff,
+                inset -1px -1px 0 #404040,
+                inset 2px 2px 0 #dfdfdf,
+                inset -2px -2px 0 #808080;
+            padding: 6px 14px;
+        }
+        :root[data-chrome="win95"] button:hover { background: #c0c0c0; }
+        :root[data-chrome="win95"] button:active {
+            box-shadow:
+                inset 1px 1px 0 #404040,
+                inset -1px -1px 0 #ffffff,
+                inset 2px 2px 0 #808080,
+                inset -2px -2px 0 #dfdfdf;
+            padding: 7px 13px 5px 15px;
+        }
+        :root[data-chrome="win95"] .author-card {
+            background: var(--card-bg);
+            border: none;
+            box-shadow:
+                inset 1px 1px 0 #ffffff,
+                inset -1px -1px 0 #404040;
+        }
+        :root[data-chrome="win95"] .author-card:hover {
+            background: #d4d0c8;
+        }
+        :root[data-chrome="win95"] th {
+            background: #c0c0c0;
+            color: #000;
+            border-bottom: 1px solid #404040;
+            font-weight: bold;
+        }
+        :root[data-chrome="win95"] tr:hover td { background: #d4d0c8; }
+        :root[data-chrome="win95"] .session-log {
+            background: #ffffff;
+            color: #000000;
+            box-shadow:
+                inset 1px 1px 0 #404040,
+                inset -1px -1px 0 #ffffff,
+                inset 2px 2px 0 #808080,
+                inset -2px -2px 0 #dfdfdf;
+            border: none;
+        }
+
+        /* =============================================================
+           WinXP chrome — applies on data-chrome="winxp" (theme=xp).
+           Tahoma, rounded corners, gradient buttons + title bars.
+           ============================================================= */
+        :root[data-chrome="winxp"] body {
+            font-family: Tahoma, "Lucida Sans Unicode", sans-serif;
+            background: linear-gradient(to bottom, #5a8ec0 0%, #3a6ea5 100%);
+            background-attachment: fixed;
+        }
+        :root[data-chrome="winxp"] h1 {
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+            color: #ffffff;
+            font-size: 20px;
+        }
+        :root[data-chrome="winxp"] .card {
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 16px;
+            overflow: hidden;
+        }
+        :root[data-chrome="winxp"] .card[data-label]::before {
+            content: attr(data-label);
+            display: block;
+            margin: -16px -16px 14px -16px;
+            background: linear-gradient(to bottom, #0058e6 0%, #2570cc 50%, #0058e6 100%);
+            color: #ffffff;
+            font-weight: bold;
+            padding: 5px 12px;
+            font-size: 13px;
+            position: static;
+            top: auto; left: auto;
+            text-transform: none;
+            text-shadow: 0 1px 1px rgba(0,0,0,0.3);
+            border-bottom: 1px solid #003c80;
+        }
+        :root[data-chrome="winxp"] button {
+            background: linear-gradient(to bottom, #ffffff 0%, #e8f0fa 50%, #c1d8f0 100%);
+            color: #000000;
+            border: 1px solid #003c74;
+            border-radius: 3px;
+            font-family: inherit;
+            font-weight: normal;
+            padding: 6px 16px;
+        }
+        :root[data-chrome="winxp"] button:hover {
+            background: linear-gradient(to bottom, #ffffff 0%, #f3f8fd 50%, #d4e5f7 100%);
+            border-color: #0054e3;
+        }
+        :root[data-chrome="winxp"] button:active {
+            background: linear-gradient(to bottom, #c1d8f0 0%, #e8f0fa 50%, #ffffff 100%);
+        }
+        :root[data-chrome="winxp"] input,
+        :root[data-chrome="winxp"] select {
+            border: 1px solid #7f9db9;
+            border-radius: 3px;
+            padding: 6px 8px;
+            background: #ffffff;
+            color: #000000;
+        }
+        :root[data-chrome="winxp"] input:focus,
+        :root[data-chrome="winxp"] select:focus { border-color: #316ac5; }
+        :root[data-chrome="winxp"] th {
+            background: linear-gradient(to bottom, #ebe9ed 0%, #d6d3ce 100%);
+            color: #000;
+            font-weight: bold;
+            border-bottom: 1px solid #b6b1a8;
+        }
+        :root[data-chrome="winxp"] tr:hover td { background: rgba(49, 106, 197, 0.08); }
+        :root[data-chrome="winxp"] .author-card { border-radius: 6px; }
+
         @media (max-width: 600px) {
             body { padding: 12px; }
             .card { padding: 14px; }
@@ -443,11 +705,19 @@
 |_______|__|_____|__| |___._|__| |___  | |_____/|_____|___  |
                                  |_____|              |_____|</pre>
         <span class="header-controls">
+            <a class="kofi-heart" href="https://ko-fi.com/axolotlindustries" target="_blank" rel="noopener" title="Support on Ko-fi" aria-label="Support on Ko-fi">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+            </a>
             <select id="theme-select" onchange="setTheme(this.value)" title="Theme" style="width:auto; padding:6px 10px; font-size:12px;">
-                <option value="neutral">Neutral</option>
-                <option value="bbs-green">BBS · Green</option>
-                <option value="bbs-amber">BBS · Amber</option>
-                <option value="bbs-ega">BBS · EGA/VGA</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="at">AT</option>
+                <option value="xt">XT</option>
+                <option value="386">386</option>
+                <option value="95">95</option>
+                <option value="xp">XP</option>
             </select>
             <form method="post" action="/logout" style="margin:0;"><button type="submit" class="link-btn">Sign out</button></form>
         </span>
@@ -501,10 +771,16 @@
     <script>
         // --- Theme persistence ---
         const THEME_KEY = 'librarydog.theme';
+        const VALID_THEMES = ['dark', 'light', 'at', 'xt', '386', '95', 'xp'];
+        const CHROME_BY_THEME = {
+            dark: 'flat', light: 'flat',
+            at: 'bbs', xt: 'bbs', '386': 'bbs',
+            '95': 'win95', xp: 'winxp',
+        };
         function setTheme(name) {
-            const valid = ['neutral', 'bbs-green', 'bbs-amber', 'bbs-ega'];
-            const t = valid.includes(name) ? name : 'neutral';
+            const t = VALID_THEMES.includes(name) ? name : 'dark';
             document.documentElement.setAttribute('data-theme', t);
+            document.documentElement.setAttribute('data-chrome', CHROME_BY_THEME[t] || 'flat');
             try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
             const sel = document.getElementById('theme-select');
             if (sel) sel.value = t;

@@ -148,28 +148,45 @@ they would also feel a hit if people were to pirate their work. So:
 
 ## Themes
 
-Four themes, persisted in `localStorage`:
+Seven themes, persisted in `localStorage`. Pick one from the dropdown
+in the top-right corner.
 
-- **Neutral** (default) — flat dark, system font, *arr-stack-ish.
-- **BBS · Green** — classic green-phosphor monospace.
-- **BBS · Amber** — same chrome, amber phosphor.
-- **BBS · EGA/VGA** — IBM ANSI 16-color palette on `#0000aa`.
+- **Dark** (default) — flat dark, system font, *arr-stack-ish.
+- **Light** — flat light variant of Dark, same layout.
+- **AT** — green-phosphor BBS. Monospace, uppercase, scanlines.
+- **XT** — amber-phosphor BBS. Same chrome as AT, different colour.
+- **386** — full ANSI 16-colour BBS on black. Each viewbox in a
+  different ANSI hue (cyan / yellow / green / magenta).
+- **95** — Windows 95. Teal desktop, gray windows with bevels, MS Sans
+  Serif, blue title bars on every card, beveled buttons that invert on
+  click.
+- **XP** — Windows XP "Luna". Bliss-blue gradient desktop, white
+  rounded cards, Tahoma, gradient buttons, XP-style blue title bars.
 
-The BBS themes share monospace, uppercase, scanlines, and square
-corners; they only differ in palette.
+The three BBS themes (AT / XT / 386) share monospace, uppercase,
+scanlines, and square corners; they differ only in palette. 95 and XP
+are full chrome refits — different fonts, borders, button styles, the
+whole thing.
 
 ## How is this different from Readarr?
 
-Readarr is the de facto *arr book solution. Library Dog is
-narrower:
+Readarr was the de facto *arr book solution — past tense. The original
+project was **retired by its developers in late 2024**, and as of this
+writing no fork has clearly emerged as the successor; what's out there
+is a scattered ecosystem of half-maintained forks, none with the
+momentum or feature parity to be called "the new Readarr." So the
+honest comparison is more "what Readarr used to be, and what Library
+Dog isn't trying to be" than a head-to-head.
+
+Library Dog is narrower than Readarr ever was:
 
 - Library Dog is **author-driven** and stateless — you punch in an
   author, pick books from a list, files land in a folder. There's
   no monitored library, no quality profiles, no notion of
-  "missing." That's Readarr's job; Calibre-Web-Automated handles
-  ongoing library management.
-- Library Dog targets **EPUB only**. No MOBI, AZW3, PDF, or
-  audiobooks.
+  "missing." Calibre-Web-Automated handles ongoing library
+  management; Library Dog just feeds it.
+- Library Dog supports **EPUB / MOBI / AZW3 / PDF**, with a
+  user-ranked priority list. Audiobooks aren't in scope.
 - Library Dog finds **public-domain works correctly**. The
   Gutenberg-first pass means you get a clean source for the
   half-dozen authors most worth reading.

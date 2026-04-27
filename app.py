@@ -210,11 +210,31 @@ def _parse_indexer_ids(raw) -> Optional[list]:
     return None
 
 
+_VALID_FORMATS = {"epub", "mobi", "azw3", "pdf"}
+
+def _parse_formats(raw) -> Optional[list]:
+    """CSV string or list of strings → ordered list of valid format names, or None."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        chunks = [c.strip().lower() for c in raw.split(",") if c.strip()]
+    elif isinstance(raw, list):
+        chunks = [str(c).strip().lower() for c in raw if str(c).strip()]
+    else:
+        return None
+    out = [c for c in chunks if c in _VALID_FORMATS]
+    return out or None
+
+
 @app.get("/candidates")
-async def candidates(author: str, title: str, indexer_ids: str = "",
+async def candidates(author: str, title: str, indexer_ids: str = "", formats: str = "",
                      u: str = Depends(current_user)):
     client = ProwlarrClient(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), lambda _: None)
-    results = await client.search(author, title, indexer_ids=_parse_indexer_ids(indexer_ids))
+    results = await client.search(
+        author, title,
+        indexer_ids=_parse_indexer_ids(indexer_ids),
+        formats=_parse_formats(formats),
+    )
     return {"candidates": results}
 
 
@@ -259,6 +279,7 @@ async def run_background_download(job_id, data):
     def log(m): JOBS.add_log(job_id, m)
 
     indexer_ids = _parse_indexer_ids(data.get('indexer_ids'))
+    formats = _parse_formats(data.get('formats'))
     prowlarr = ProwlarrClient(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), log)
     sab = SabnzbdClient(os.getenv('SABNZBD_URL'), os.getenv('SABNZBD_KEY'), log)
     qbit = QbitClient(
@@ -294,7 +315,8 @@ async def run_background_download(job_id, data):
                         candidates = [{'link': b['nzb_url'], 'kind': b.get('kind', 'nzb')}]
                     else:
                         candidates = await prowlarr.search(data['author'], b['title'],
-                                                            indexer_ids=indexer_ids)
+                                                            indexer_ids=indexer_ids,
+                                                            formats=formats)
                     for cand in candidates[:MAX_INDEXER_TRIES]:
                         kind = cand.get('kind', 'nzb')
                         title = f"{data['author']} - {b['title']}"

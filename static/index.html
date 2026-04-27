@@ -731,6 +731,14 @@
         </details>
     </div>
 
+    <div id="formats-card" class="card" data-card="search" data-label=" [ FORMATS ] ">
+        <details>
+            <summary id="formats-summary">Formats</summary>
+            <div id="formats-list" style="margin-top:10px;"></div>
+            <p class="indexer-hint">Tick to enable. Use ↑ / ↓ to set priority — higher entries are preferred when multiple formats are available for the same book.</p>
+        </details>
+    </div>
+
     <div class="card" data-card="search" data-label=" [ SEARCH ] ">
         <div class="search-group">
             <input type="text" id="author" placeholder="Author name" onkeyup="if(event.key==='Enter') search()">
@@ -892,6 +900,83 @@
             renderIndexers(prefs);
         }
 
+        // --- Format prefs ---
+        // Same shape as indexer prefs: { enabled: [fmt, ...], disabled: [fmt, ...] }.
+        // `enabled` is ordered by priority (top entry preferred).
+        const FORMAT_KEY = 'librarydog.formatPrefs';
+        const ALL_FORMATS = ['epub', 'mobi', 'azw3', 'pdf'];
+        const FORMAT_DEFAULTS = { enabled: ['epub'], disabled: ['mobi', 'azw3', 'pdf'] };
+
+        function loadFormatPrefs() {
+            try {
+                const raw = localStorage.getItem(FORMAT_KEY);
+                if (!raw) return JSON.parse(JSON.stringify(FORMAT_DEFAULTS));
+                const p = JSON.parse(raw);
+                // Reconcile: drop unknowns, append never-seen.
+                p.enabled = (p.enabled || []).filter(f => ALL_FORMATS.includes(f));
+                p.disabled = (p.disabled || []).filter(f => ALL_FORMATS.includes(f));
+                const known = new Set([...p.enabled, ...p.disabled]);
+                for (const f of ALL_FORMATS) if (!known.has(f)) p.disabled.push(f);
+                return p;
+            } catch (_) { return JSON.parse(JSON.stringify(FORMAT_DEFAULTS)); }
+        }
+        function saveFormatPrefs(p) {
+            try { localStorage.setItem(FORMAT_KEY, JSON.stringify(p)); } catch (_) {}
+        }
+        function activeFormats() { return loadFormatPrefs().enabled; }
+
+        function renderFormats() {
+            const prefs = loadFormatPrefs();
+            const order = [...prefs.enabled, ...prefs.disabled];
+            const list = document.getElementById('formats-list');
+            list.innerHTML = '';
+            order.forEach(fmt => {
+                const enabled = prefs.enabled.includes(fmt);
+                const idx = prefs.enabled.indexOf(fmt);
+                const isFirst = idx === 0;
+                const isLast = idx === prefs.enabled.length - 1;
+                const row = document.createElement('div');
+                row.className = 'indexer-row';
+                row.innerHTML = `
+                    <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleFormat('${fmt}')">
+                    <span class="indexer-name ${enabled ? '' : 'disabled'}">${fmt.toUpperCase()}</span>
+                    <button class="arrow-btn" onclick="moveFormat('${fmt}', -1)" ${(!enabled || isFirst) ? 'disabled' : ''} title="Higher priority">↑</button>
+                    <button class="arrow-btn" onclick="moveFormat('${fmt}', 1)"  ${(!enabled || isLast) ? 'disabled' : ''} title="Lower priority">↓</button>
+                `;
+                list.appendChild(row);
+            });
+            const summary = document.getElementById('formats-summary');
+            if (summary) {
+                summary.innerText = prefs.enabled.length
+                    ? `Formats (${prefs.enabled.map(f => f.toUpperCase()).join(' › ')})`
+                    : 'Formats (none — searches will return nothing!)';
+            }
+        }
+
+        function toggleFormat(fmt) {
+            const prefs = loadFormatPrefs();
+            if (prefs.enabled.includes(fmt)) {
+                prefs.enabled = prefs.enabled.filter(f => f !== fmt);
+                if (!prefs.disabled.includes(fmt)) prefs.disabled.push(fmt);
+            } else {
+                prefs.disabled = prefs.disabled.filter(f => f !== fmt);
+                if (!prefs.enabled.includes(fmt)) prefs.enabled.push(fmt);
+            }
+            saveFormatPrefs(prefs);
+            renderFormats();
+        }
+        function moveFormat(fmt, delta) {
+            const prefs = loadFormatPrefs();
+            const i = prefs.enabled.indexOf(fmt);
+            if (i < 0) return;
+            const j = i + delta;
+            if (j < 0 || j >= prefs.enabled.length) return;
+            [prefs.enabled[i], prefs.enabled[j]] = [prefs.enabled[j], prefs.enabled[i]];
+            saveFormatPrefs(prefs);
+            renderFormats();
+        }
+        renderFormats();
+
         // --- Bibliography mode persistence ---
         // Strict: Wikidata's typed bibliography (cleaner, may miss oddly-classified works).
         // Permissive: trust the author link, filter for items that have a publication
@@ -1018,7 +1103,8 @@
             document.getElementById('candidates-card').style.display = 'none';
             try {
                 const idsParam = activeIndexerIds().join(',');
-                const res = await apiFetch(`/candidates?author=${encodeURIComponent(currentAuthor)}&title=${encodeURIComponent(book.title)}&indexer_ids=${encodeURIComponent(idsParam)}`);
+                const fmtParam = activeFormats().join(',');
+                const res = await apiFetch(`/candidates?author=${encodeURIComponent(currentAuthor)}&title=${encodeURIComponent(book.title)}&indexer_ids=${encodeURIComponent(idsParam)}&formats=${encodeURIComponent(fmtParam)}`);
                 const data = await res.json();
                 if (!data.candidates || !data.candidates.length) {
                     await launchJob([book]);
@@ -1026,11 +1112,13 @@
                 }
                 _candidates = data.candidates;
                 document.getElementById('candidates-title').innerText = `Sources for: ${book.title}`;
-                let h = `<table><tr><th>Release</th><th>Type</th><th>Size</th><th></th></tr>`;
+                let h = `<table><tr><th>Release</th><th>Format</th><th>Type</th><th>Size</th><th></th></tr>`;
                 data.candidates.forEach((c, i) => {
                     const kind = (c.kind || 'nzb').toLowerCase();
+                    const fmt = (c.format || 'epub').toLowerCase();
                     h += `<tr>
                         <td style="max-width:500px;word-break:break-word;text-transform:none">${c.title}</td>
+                        <td><span class="kind-badge">${fmt}</span></td>
                         <td><span class="kind-badge ${kind}">${kind}</span></td>
                         <td style="white-space:nowrap">${fmtSize(c.size)}</td>
                         <td><button class="btn-inline btn-secondary" onclick="grabCandidate(${i})">Grab</button></td>
@@ -1059,7 +1147,11 @@
             const res = await apiFetch('/start_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ author: currentAuthor, books, indexer_ids: activeIndexerIds() })
+                body: JSON.stringify({
+                    author: currentAuthor, books,
+                    indexer_ids: activeIndexerIds(),
+                    formats: activeFormats(),
+                })
             });
             const { job_id } = await res.json();
             createSession(job_id, currentAuthor, books.length);

@@ -17,10 +17,37 @@ from urllib.parse import quote, urljoin
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# File extensions Library Dog will surface as "books" in the library root.
-# The multi-format support extends this; for now hardlink_books_to_root and
-# flatten_downloads consult it.
-BOOK_EXTENSIONS = {".epub"}
+# Supported book formats. Order in this dict is the canonical fallback priority
+# when the user hasn't specified one (EPUB first because it's the lingua franca
+# of the *arr / CWA ecosystem and metadata embedding works there).
+FORMAT_MARKERS: Dict[str, Tuple[str, ...]] = {
+    "epub": (" epub", ".epub"),
+    "mobi": (" mobi", ".mobi"),
+    "azw3": (" azw3", ".azw3", " azw", ".azw"),
+    "pdf":  (" pdf", ".pdf"),
+}
+ALL_FORMATS = tuple(FORMAT_MARKERS.keys())
+BOOK_EXTENSIONS = {f".{f}" for f in ALL_FORMATS}
+
+# Things that, in a release title, mark it as definitely-not-a-book (a movie,
+# audiobook, etc.) regardless of whether a book format is also mentioned.
+NON_BOOK_MARKERS: Tuple[str, ...] = (
+    " mp4", " avi", " mkv", " m4v", " wmv", ".mp4", ".avi", ".mkv",
+    " hdtv", " 1080p", " 720p", " 2160p", " x264", " x265", " h264", " h265",
+    " bluray", " blu-ray", " dvdrip", " bdrip", " webrip", " web-dl", " hdrip",
+    " mp3", " m4a", " m4b", " flac", " wav", " ogg", ".mp3", ".m4b", ".flac",
+    " audiobook", " audio book", " audiobk",
+)
+
+
+def detect_format(title: str) -> Optional[str]:
+    """Return 'epub'/'mobi'/'azw3'/'pdf' if the release title declares one,
+    else None."""
+    t = f" {(title or '').lower()} "
+    for fmt, markers in FORMAT_MARKERS.items():
+        if any(m in t for m in markers):
+            return fmt
+    return None
 
 def _ascii_fold(text: str) -> str:
     """Strip diacritical marks for indexer/library search queries (å→a, ø→o, ü→u, etc.)."""
@@ -114,22 +141,27 @@ def hardlink_books_to_root(src_dir: str, dest_dir: str, log: Callable = print) -
 
 
 def flatten_downloads(base_dir: str, log: Callable = print) -> None:
-    """Make base_dir a flat directory containing only .epub files.
+    """Make base_dir a flat directory containing only book files.
 
-    Moves every nested .epub up to base_dir (disambiguating on collision), then
-    deletes everything else — subfolders, .nfo, .mobi, .mp4, cover images, whatever
-    SABnzbd or a multi-file NZB left behind.
+    Moves every nested book file (any extension in BOOK_EXTENSIONS) up to
+    base_dir (disambiguating on collision), then deletes everything else —
+    subfolders, .nfo, .mp4, cover images, whatever SABnzbd or a multi-file
+    NZB left behind.
     """
     base = Path(base_dir)
     if not base.is_dir():
         return
 
-    for epub in base.rglob('*.epub'):
-        if epub.parent == base:
+    for book in base.rglob('*'):
+        if not book.is_file():
             continue
-        dest = base / epub.name
+        if book.suffix.lower() not in BOOK_EXTENSIONS:
+            continue
+        if book.parent == base:
+            continue
+        dest = base / book.name
         if dest.exists():
-            stem, suffix = epub.stem, epub.suffix
+            stem, suffix = book.stem, book.suffix
             i = 1
             while True:
                 candidate = base / f"{stem} ({i}){suffix}"
@@ -138,19 +170,19 @@ def flatten_downloads(base_dir: str, log: Callable = print) -> None:
                     break
                 i += 1
         try:
-            shutil.move(str(epub), str(dest))
-            log(f"Moved {epub.name} to downloads root")
+            shutil.move(str(book), str(dest))
+            log(f"Moved {book.name} to downloads root")
         except Exception as e:
-            log(f"Failed to move {epub.name}: {e}")
+            log(f"Failed to move {book.name}: {e}")
 
     for item in base.iterdir():
         try:
             if item.is_dir():
                 shutil.rmtree(item)
                 log(f"Removed folder: {item.name}")
-            elif item.suffix.lower() != '.epub':
+            elif item.suffix.lower() not in BOOK_EXTENSIONS:
                 item.unlink()
-                log(f"Removed non-EPUB: {item.name}")
+                log(f"Removed non-book file: {item.name}")
         except Exception as e:
             log(f"Failed to clean {item.name}: {e}")
 
@@ -190,19 +222,6 @@ class ProwlarrClient:
     """
 
     BOOK_CATEGORY = "7020"  # Newznab Books > EBook.
-
-    # Hard rejects — title declares a format we don't want.
-    _NON_EPUB_MARKERS = (
-        " mp4", " avi", " mkv", " m4v", " wmv", ".mp4", ".avi", ".mkv",
-        " hdtv", " 1080p", " 720p", " 2160p", " x264", " x265", " h264", " h265",
-        " bluray", " blu-ray", " dvdrip", " bdrip", " webrip", " web-dl", " hdrip",
-        " mp3", " m4a", " m4b", " flac", " wav", " ogg", ".mp3", ".m4b", ".flac",
-        " audiobook", " audio book", " audiobk",
-    )
-    # Soft rejects — other ebook formats explicitly declared without EPUB also present.
-    _OTHER_EBOOK_MARKERS = (
-        " mobi", " azw3", " azw", " pdf", " rtf", ".mobi", ".azw3", ".azw", ".pdf",
-    )
 
     def __init__(self, base_url: str, api_key: str, log_func: Callable):
         # Tolerate the legacy per-indexer URL form (PROWLARR_URL=http://host:9696/15)
@@ -257,9 +276,11 @@ class ProwlarrClient:
             return []
 
     async def search(self, author: str, title: str,
-                     indexer_ids: Optional[List[int]] = None) -> List[Dict]:
+                     indexer_ids: Optional[List[int]] = None,
+                     formats: Optional[List[str]] = None) -> List[Dict]:
         """Aggregated search across (optionally a subset of) Prowlarr's indexers.
-        Returns release dicts already filtered by author/title/format/size."""
+        Returns release dicts already filtered by author/title/format/size,
+        sorted by user's format priority then indexer priority."""
         if not self.configured():
             return []
         self.log(f"Searching for '{title}'...")
@@ -305,10 +326,14 @@ class ProwlarrClient:
                 "indexer_id": int(rel["indexerId"]) if rel.get("indexerId") is not None else 0,
                 "indexer_name": rel.get("indexer", "?"),
             })
-        return self._filter(items, author, title, indexer_ids)
+        return self._filter(items, author, title, indexer_ids, formats)
 
     def _filter(self, items: List[Dict], author: str, title: str,
-                indexer_ids: Optional[List[int]]) -> List[Dict]:
+                indexer_ids: Optional[List[int]],
+                formats: Optional[List[str]]) -> List[Dict]:
+        # Default to EPUB-only when caller didn't specify (backwards compatible).
+        allowed = list(formats) if formats else ["epub"]
+        allowed_set = set(allowed)
         results = []
         # Two-pass title match: subtitle-kept first, subtitle-stripped fallback. Stops
         # "My Struggle: Book 2" collapsing to "my struggle" and matching every volume.
@@ -322,8 +347,16 @@ class ProwlarrClient:
             author_match = any(p in norm_res_title for p in author_parts) if author_parts else True
             if not (title_match and author_match):
                 continue
-            if not self._looks_like_epub(res_title):
+            t = f" {res_title.lower()} "
+            if any(m in t for m in NON_BOOK_MARKERS):
                 continue
+            declared = detect_format(res_title)
+            if declared and declared not in allowed_set:
+                continue
+            # Pin the result's format: declared if known, else assume the user's
+            # top preference (this is how the no-format-declared 'ambiguous'
+            # case behaved historically — it was implicitly EPUB).
+            fmt = declared or allowed[0]
             size = int(item.get("size") or 0)
             if size and size > MAX_EPUB_BYTES:
                 continue
@@ -332,27 +365,19 @@ class ProwlarrClient:
                 "link": item["link"],
                 "size": size,
                 "kind": item["kind"],
+                "format": fmt,
                 "indexer_id": item.get("indexer_id", 0),
                 "indexer_name": item.get("indexer_name", "?"),
             })
-        # If the caller specified a priority order, sort by it so the user's preferred
-        # indexer surfaces first in the candidates UI and is tried first in batch jobs.
-        if indexer_ids:
-            order = {iid: pos for pos, iid in enumerate(indexer_ids)}
-            results.sort(key=lambda r: order.get(r.get("indexer_id", 0), len(order)))
+        # Sort by format priority first, then indexer priority. Both fall back
+        # to "end of list" for unknown values.
+        fmt_order = {f: i for i, f in enumerate(allowed)}
+        idx_order = {iid: pos for pos, iid in enumerate(indexer_ids or [])}
+        results.sort(key=lambda r: (
+            fmt_order.get(r["format"], len(fmt_order)),
+            idx_order.get(r.get("indexer_id", 0), len(idx_order)),
+        ))
         return results
-
-    @classmethod
-    def _looks_like_epub(cls, title: str) -> bool:
-        t = f" {title.lower()} "
-        if "epub" in t:
-            return True
-        if any(m in t for m in cls._NON_EPUB_MARKERS):
-            return False
-        if any(m in t for m in cls._OTHER_EBOOK_MARKERS):
-            return False
-        # No format declared — ambiguous but plausible; let it through.
-        return True
 
 
 def _fmt_size(n: int) -> str:

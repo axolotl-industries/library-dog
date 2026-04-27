@@ -805,7 +805,26 @@ class MetadataFetcher:
                 if norm_name not in seen_names or doc.get("work_count", 0) > seen_names[norm_name].get("work_count", 0):
                     seen_names[norm_name] = doc
 
-            candidates = sorted(seen_names.values(), key=lambda x: x.get("work_count", 0), reverse=True)[:5]
+            # Sort by name-match relevance first (exact > prefix > contains > token-coverage),
+            # then by work_count as tiebreaker. Searching "Michael Crichton" used to surface
+            # Harlan Ellison and Maeve Binchy ahead of him because OpenLibrary's fuzzy search
+            # returned them and we re-sorted purely by work_count, which their long backlists
+            # won.
+            q = normalize_text(name)
+            q_tokens = q.split()
+
+            def relevance(doc):
+                n = normalize_text(doc.get("name", ""))
+                if n == q: return 3
+                if n.startswith(q): return 2
+                if q in n: return 1
+                if q_tokens and all(t in n for t in q_tokens): return 1
+                return 0
+
+            candidates = sorted(
+                seen_names.values(),
+                key=lambda x: (-relevance(x), -(x.get("work_count") or 0)),
+            )[:5]
             
             # 2. Enrich in parallel
             tasks = [self._fetch_author_details(doc) for doc in candidates]

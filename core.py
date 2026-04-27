@@ -283,7 +283,7 @@ class ProwlarrClient:
         sorted by user's format priority then indexer priority."""
         if not self.configured():
             return []
-        self.log(f"Searching for '{title}'...")
+        self.log(f"Querying indexers for '{title}'...")
 
         # Prowlarr's /api/v1/search expects array params as repeated query keys
         # (indexerIds=10&indexerIds=15), not a CSV — passing a list lets httpx
@@ -1062,6 +1062,7 @@ class GutenbergClient:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": UA}) as client:
                 resp = await client.get(self._API, params={"search": query})
                 if resp.status_code != 200:
+                    log(f"Gutenberg returned HTTP {resp.status_code}; skipping")
                     return None
                 for book in resp.json().get("results", []):
                     if not _title_match(book.get("title", "")):
@@ -1076,7 +1077,9 @@ class GutenbergClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log(f"Gutenberg search error: {e}")
+            # gutendex.com goes down periodically; httpx.ReadTimeout in particular
+            # renders with an empty __str__, which is why we include the type.
+            log(f"Gutenberg unreachable: {type(e).__name__}: {e or '(no message)'} — falling through")
         return None
 
 

@@ -73,13 +73,16 @@
             --shadow: none;
         }
 
-        /* --- BBS EGA/VGA (retro, full ANSI 16-color on classic IBM blue) --- */
+        /* --- BBS EGA/VGA (retro, full ANSI 16-color on black) ---
+           The defining look: black background, white body text, and each
+           card frame in a different ANSI hue (cyan, yellow, green, magenta).
+           Per-card colours come via [data-card="..."] further down. */
         :root[data-theme="bbs-ega"] {
-            --bg: #0000aa;            /* IBM blue */
+            --bg: #000000;
             --card-bg: #000000;
-            --card-border: #aaaaaa;
-            --text: #aaaaaa;          /* light gray */
-            --text-muted: #5555ff;    /* bright blue */
+            --card-border: #ffffff;   /* default frame; cards override per-label */
+            --text: #ffffff;          /* bright white body text */
+            --text-muted: #aaaaaa;    /* light gray */
             --primary: #ffff55;       /* yellow — classic "selected" */
             --primary-fg: #000000;
             --primary-hover: #ffffff;
@@ -92,6 +95,20 @@
             --radius: 0;
             --shadow: none;
         }
+        /* Per-card hue assignments. Each main viewbox gets its own ANSI accent so
+           the screen reads as the multi-coloured BBS aesthetic, not one flat tone. */
+        :root[data-theme="bbs-ega"] .card[data-card="search"]      { border-color: #55ffff; }
+        :root[data-theme="bbs-ega"] .card[data-card="search"]::before  { color: #55ffff; }
+        :root[data-theme="bbs-ega"] .card[data-card="authors"]     { border-color: #ffff55; }
+        :root[data-theme="bbs-ega"] .card[data-card="authors"]::before { color: #ffff55; }
+        :root[data-theme="bbs-ega"] .card[data-card="results"]     { border-color: #55ff55; }
+        :root[data-theme="bbs-ega"] .card[data-card="results"]::before { color: #55ff55; }
+        :root[data-theme="bbs-ega"] .card[data-card="sources"]     { border-color: #ff55ff; }
+        :root[data-theme="bbs-ega"] .card[data-card="sources"]::before { color: #ff55ff; }
+        :root[data-theme="bbs-ega"] .card[data-card="session"]     { border-color: #aaaaaa; }
+        :root[data-theme="bbs-ega"] .card[data-card="session"]::before { color: #aaaaaa; }
+        :root[data-theme="bbs-ega"] h3 { color: var(--info); }
+        :root[data-theme="bbs-ega"] th { color: var(--warning); background: rgba(255, 255, 85, 0.10); }
 
         body {
             font-family: var(--font-body);
@@ -136,6 +153,27 @@
             border-bottom-width: var(--border-width);
             border-bottom-color: var(--primary);
             letter-spacing: 2px;
+            align-items: flex-end;
+        }
+
+        /* ASCII title hidden by default, shown in BBS themes (and only when there's
+           horizontal room — on phones the figlet block would overflow, so plain
+           text wins). */
+        .title-text { display: inline; }
+        .title-ascii {
+            display: none;
+            margin: 0;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.0;
+            letter-spacing: 0;
+            text-transform: none;
+            color: var(--primary);
+            white-space: pre;
+        }
+        @media (min-width: 720px) {
+            :root[data-theme^="bbs-"] .title-text { display: none; }
+            :root[data-theme^="bbs-"] .title-ascii { display: block; }
         }
 
         .header-controls { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: normal; }
@@ -236,7 +274,6 @@
         th { background: rgba(255, 255, 255, 0.03); text-align: left; padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 13px; color: var(--text-muted); }
         :root[data-theme^="bbs-"] th { background: rgba(0, 255, 0, 0.08); color: var(--text); }
         :root[data-theme="bbs-amber"] th { background: rgba(255, 176, 0, 0.10); }
-        :root[data-theme="bbs-ega"] th { background: rgba(255, 255, 85, 0.10); color: var(--info); }
         td { padding: 10px; border-bottom: 1px solid var(--card-border); font-size: 14px; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
@@ -356,7 +393,12 @@
 </head>
 <body>
     <h1>
-        <span>Library Dog</span>
+        <span class="title-text">Library Dog</span>
+<pre class="title-ascii"> _____   __ __                            _____
+|     |_|__|  |--.----.---.-.----.--.--. |     \.-----.-----.
+|       |  |  _  |   _|  _  |   _|  |  | |  --  |  _  |  _  |
+|_______|__|_____|__| |___._|__| |___  | |_____/|_____|___  |
+                                 |_____|              |_____|</pre>
         <span class="header-controls">
             <select id="theme-select" onchange="setTheme(this.value)" title="Theme" style="width:auto; padding:6px 10px; font-size:12px;">
                 <option value="neutral">Neutral</option>
@@ -368,7 +410,7 @@
         </span>
     </h1>
 
-    <div class="card" data-label=" [ SEARCH ] ">
+    <div class="card" data-card="search" data-label=" [ SEARCH ] ">
         <div class="search-group">
             <input type="text" id="author" placeholder="Author name" onkeyup="if(event.key==='Enter') search()">
             <button id="search-btn" onclick="search()" style="max-width:160px;">Search</button>
@@ -376,12 +418,12 @@
         <input type="text" id="query" placeholder="Filter title (optional)" style="margin-top:12px;" onkeyup="if(event.key==='Enter') search()">
     </div>
 
-    <div id="author-select-card" class="card" data-label=" [ AUTHORS ] " style="display:none;">
+    <div id="author-select-card" class="card" data-card="authors" data-label=" [ AUTHORS ] " style="display:none;">
         <h3>Pick an author</h3>
         <div id="author-grid" class="author-grid"></div>
     </div>
 
-    <div id="results-card" class="card" data-label=" [ RESULTS ] " style="display:none;">
+    <div id="results-card" class="card" data-card="results" data-label=" [ RESULTS ] " style="display:none;">
         <h3 id="author-title"></h3>
         <div class="table-container"><div id="results-list"></div></div>
         <div style="margin-top: 18px;">
@@ -389,7 +431,7 @@
         </div>
     </div>
 
-    <div id="candidates-card" class="card" data-label=" [ SOURCES ] " style="display:none;">
+    <div id="candidates-card" class="card" data-card="sources" data-label=" [ SOURCES ] " style="display:none;">
         <h3 id="candidates-title"></h3>
         <div class="table-container" id="candidates-table"></div>
         <div style="margin-top: 14px;">
@@ -568,6 +610,7 @@
             const panel = document.createElement('div');
             panel.className = 'card';
             panel.id = `session-${jobId}`;
+            panel.dataset.card = 'session';
             panel.dataset.label = ` [ ${author.toUpperCase().slice(0, 24)} ] `;
             panel.innerHTML = `
                 <div class="session-header">

@@ -104,6 +104,10 @@ hardlink-up-to-the-library step has both ends of the link visible.
 There's also a `docker-compose.yml` in the repo with every supported
 env var documented inline.
 
+> **Tip:** pin to a version tag (`:v0.1.0`) instead of `:latest` if you
+> don't want surprises on `docker compose pull`. This is alpha
+> software; behaviour can shift between commits.
+
 ## Configuration
 
 | Env var                | Default        | What |

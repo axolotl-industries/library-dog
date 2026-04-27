@@ -285,14 +285,19 @@ class ProwlarrClient:
             return []
         self.log(f"Searching for '{title}'...")
 
-        params = {
-            "query": _query_title(title),
-            "type": "search",
-            "categories": self.BOOK_CATEGORY,
-            "limit": 100,
-        }
+        # Prowlarr's /api/v1/search expects array params as repeated query keys
+        # (indexerIds=10&indexerIds=15), not a CSV — passing a list lets httpx
+        # generate that form. Sending a CSV gets you a 400 with
+        # "The value '10,15,20' is not valid."
+        params: List[Tuple[str, object]] = [
+            ("query", _query_title(title)),
+            ("type", "search"),
+            ("categories", int(self.BOOK_CATEGORY)),
+            ("limit", 100),
+        ]
         if indexer_ids:
-            params["indexerIds"] = ",".join(str(i) for i in indexer_ids)
+            for iid in indexer_ids:
+                params.append(("indexerIds", int(iid)))
 
         try:
             async with httpx.AsyncClient(timeout=20.0, verify=False, follow_redirects=True,

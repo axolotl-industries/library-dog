@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import asyncio
 import httpx
 import ssl
@@ -9,7 +8,6 @@ import zipfile
 import sys
 import shutil
 import unicodedata
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from typing import List, Dict, Optional, Tuple, Generator, Callable
@@ -74,27 +72,6 @@ def _query_title(title: str) -> str:
     return " ".join(t.split())
 
 
-def _classify_link(link: str, enclosure_type: Optional[str]) -> str:
-    """Decide whether a Newznab result is an NZB or a torrent.
-
-    Indexers vary in how reliably they set <enclosure type=...>; trackers
-    proxied through Prowlarr often omit it entirely. So we check the URL
-    shape too: magnet: scheme and .torrent suffix are unambiguous.
-    """
-    et = (enclosure_type or "").lower()
-    lk = (link or "").lower()
-    if lk.startswith("magnet:") or "magnet" in et:
-        return "torrent"
-    if lk.endswith(".torrent") or "bittorrent" in et:
-        return "torrent"
-    if lk.endswith(".nzb") or "nzb" in et:
-        return "nzb"
-    # Unknown format. Default to NZB — historically this was the only mode and
-    # SABnzbd handles a non-NZB by erroring out cleanly, whereas qBittorrent
-    # would silently accept and stall on a non-torrent payload.
-    return "nzb"
-
-
 def flatten_downloads(base_dir: str, log: Callable = print) -> None:
     """Make base_dir a flat directory containing only .epub files.
 
@@ -157,186 +134,145 @@ async def resolve_annas_domain(log_func: Callable) -> str:
 MAX_EPUB_BYTES = 50 * 1024 * 1024  # 50MB — EPUBs are small; anything bigger is a movie/audiobook/rar pack.
 
 
-class NewznabScraper:
-    # Hard rejects — release title declares a format we don't want, so the download would
-    # be wasted. If the title also says EPUB, _looks_like_epub still keeps it.
+class ProwlarrClient:
+    """Talks to Prowlarr's v1 API across all configured indexers.
+
+    Two endpoints we care about:
+      GET /api/v1/indexer   — list of indexers (id, name, protocol, enable).
+      GET /api/v1/search    — aggregated search; takes indexerIds= to scope
+                              and categories= for the Newznab cat code.
+
+    Search results come back as JSON ReleaseResource objects with an
+    explicit `protocol` field (`usenet` | `torrent`), so we can route
+    cleanly without the magnet:/.torrent URL sniffing the old Newznab
+    passthrough required.
+    """
+
+    BOOK_CATEGORY = "7020"  # Newznab Books > EBook.
+
+    # Hard rejects — title declares a format we don't want.
     _NON_EPUB_MARKERS = (
-        # Video
         " mp4", " avi", " mkv", " m4v", " wmv", ".mp4", ".avi", ".mkv",
         " hdtv", " 1080p", " 720p", " 2160p", " x264", " x265", " h264", " h265",
         " bluray", " blu-ray", " dvdrip", " bdrip", " webrip", " web-dl", " hdrip",
-        # Audio
         " mp3", " m4a", " m4b", " flac", " wav", " ogg", ".mp3", ".m4b", ".flac",
         " audiobook", " audio book", " audiobk",
     )
-    # Soft rejects — other book formats explicitly declared without EPUB also present.
+    # Soft rejects — other ebook formats explicitly declared without EPUB also present.
     _OTHER_EBOOK_MARKERS = (
         " mobi", " azw3", " azw", " pdf", " rtf", ".mobi", ".azw3", ".azw", ".pdf",
     )
 
-    def __init__(self, api_url: str, api_key: str, log_func: Callable):
-        # Normalise to the indexer root. Strip query string, trailing slashes, and a trailing /api.
-        base = api_url.strip().split('?')[0].rstrip('/')
-        if base.endswith('/api'):
-            base = base[:-4]
-        self.api_url = base
-        self.api_key = api_key.strip()
+    def __init__(self, base_url: str, api_key: str, log_func: Callable):
+        # Tolerate the legacy per-indexer URL form (PROWLARR_URL=http://host:9696/15)
+        # by stripping a trailing /<digits> segment so we land on the API root.
+        url = (base_url or "").strip().rstrip('/')
+        m = re.match(r"^(.+?)/\d+$", url)
+        if m:
+            url = m.group(1)
+        self.base_url = url
+        self.api_key = (api_key or "").strip()
         self.log = log_func
 
-    async def search(self, author: str, title: str) -> List[Dict]:
-        if not self.api_url or not self.api_key:
-            return []
-        self.log(f"Searching Usenet for '{title}'...")
+    def configured(self) -> bool:
+        return bool(self.base_url and self.api_key)
 
-        url = f"{self.api_url}/api"
-        # Newznab standard is an unquoted, space-separated query. Literal quotes around the phrase
-        # cause many indexers (incl. most of Prowlarr's passthroughs) to treat it as an exact match
-        # and return nothing — or to respond with an error page.
-        #
-        # cat=7020 restricts to Books > EBook. The previous "7000,7020,8010" pulled in audiobooks,
-        # magazines, comics, and the "Other > Misc" catch-all that had MP4/AVI releases.
-        params = {
-            "t": "search",
-            "cat": "7020",
-            "q": _query_title(title),
-            "apikey": self.api_key,
-        }
-        headers = {
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "X-Api-Key": self.api_key,
             "User-Agent": UA,
-            # Be explicit about what we expect. Some reverse proxies in front of Prowlarr fall back
-            # to HTML (login / error pages) when Accept is */* — being explicit avoids that.
-            "Accept": "application/rss+xml, application/xml, text/xml, application/json;q=0.9, */*;q=0.1",
+            "Accept": "application/json",
         }
 
+    async def list_indexers(self) -> List[Dict]:
+        """Return Prowlarr's indexer list as [{id, name, protocol, enable, priority}]."""
+        if not self.configured():
+            return []
         try:
-            async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True, headers=headers) as client:
-                resp = await client.get(url, params=params)
-
-                if resp.status_code != 200:
-                    self.log(f"Usenet API error: HTTP {resp.status_code}")
+            async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True,
+                                         headers=self._headers()) as client:
+                r = await client.get(f"{self.base_url}/api/v1/indexer")
+                if r.status_code != 200:
+                    self.log(f"Prowlarr indexer list HTTP {r.status_code}")
                     return []
-
-                ctype = resp.headers.get("Content-Type", "").lower()
-                body = resp.text
-                stripped = body.lstrip()
-                if "text/html" in ctype or stripped[:15].lower().startswith(("<!doctype", "<html")):
-                    self.log("Usenet error: Prowlarr returned HTML. Check the URL points at the indexer root "
-                             "(http://<host>:<port>/<indexer-id>) and isn't going through an auth gateway.")
-                    return []
-
-                items = self._parse(body, ctype)
-                return self._match(items, author, title)
+                data = r.json()
+                out = []
+                for i in data:
+                    iid = i.get("id")
+                    if iid is None:
+                        continue
+                    out.append({
+                        "id": int(iid),
+                        "name": i.get("name", "?"),
+                        "protocol": (i.get("protocol") or "unknown").lower(),
+                        "enable": bool(i.get("enable", True)),
+                        "priority": int(i.get("priority", 25)),
+                    })
+                return out
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.log(f"Usenet search error: {e}")
+            self.log(f"Prowlarr indexer list error: {e}")
             return []
 
-    def _parse(self, body: str, ctype: str) -> List[Dict]:
-        # Prefer the parser that matches the content type, fall back to the other.
-        if "json" in ctype:
-            items = self._parse_json(body)
-            return items if items else self._parse_xml(body)
-        items = self._parse_xml(body)
-        return items if items else self._parse_json(body)
-
-    def _parse_xml(self, body: str) -> List[Dict]:
-        items: List[Dict] = []
-        try:
-            # Drop the default xmlns so ET.find('item') works without namespace gymnastics.
-            cleaned = re.sub(r'\sxmlns="[^"]+"', '', body, count=1)
-            root = ET.fromstring(cleaned)
-            # Newznab errors look like <error code="100" description="..." />
-            if root.tag.lower() == 'error':
-                self.log(f"Newznab error response: code={root.attrib.get('code')} desc={root.attrib.get('description')}")
-                return []
-            for item in root.iter('item'):
-                t = item.findtext('title', default='') or ''
-                l = item.findtext('link', default='') or ''
-                enc = item.find('enclosure')
-                enc_url = enc.attrib.get('url') if enc is not None else None
-                enc_type = enc.attrib.get('type') if enc is not None else None
-                size = 0
-                if enc is not None:
-                    try: size = int(enc.attrib.get('length') or 0)
-                    except ValueError: size = 0
-                # Newznab also exposes size as <newznab:attr name="size" value="..."/>
-                if not size:
-                    for child in item:
-                        tag = child.tag.split('}')[-1]
-                        if tag == 'attr' and child.attrib.get('name') == 'size':
-                            try: size = int(child.attrib.get('value') or 0)
-                            except ValueError: pass
-                            if size: break
-                items.append({"title": t.strip(), "link": l.strip(), "enclosure": enc_url,
-                              "enclosure_type": enc_type, "size": size})
-        except ET.ParseError as e:
-            self.log(f"XML parse error: {e}; falling back to regex extraction")
-            for block in re.findall(r'<item[^>]*>(.*?)</item>', body, re.I | re.S):
-                t = re.search(r'<title[^>]*>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</title>', block, re.I | re.S)
-                l = re.search(r'<link[^>]*>\s*(.*?)\s*</link>', block, re.I | re.S)
-                e_url = re.search(r'<enclosure[^>]+url=["\'](.*?)["\']', block, re.I | re.S)
-                e_type = re.search(r'<enclosure[^>]+type=["\'](.*?)["\']', block, re.I | re.S)
-                e_size = re.search(r'<enclosure[^>]+length=["\'](\d+)["\']', block, re.I | re.S)
-                attr_size = re.search(r'<newznab:attr\s+name=["\']size["\']\s+value=["\'](\d+)["\']', block, re.I)
-                size = 0
-                if e_size:
-                    try: size = int(e_size.group(1))
-                    except ValueError: size = 0
-                if not size and attr_size:
-                    try: size = int(attr_size.group(1))
-                    except ValueError: size = 0
-                items.append({
-                    "title": (t.group(1).strip() if t else ''),
-                    "link": (l.group(1).strip() if l else ''),
-                    "enclosure": (e_url.group(1).strip() if e_url else None),
-                    "enclosure_type": (e_type.group(1).strip() if e_type else None),
-                    "size": size,
-                })
-        return items
-
-    def _parse_json(self, body: str) -> List[Dict]:
-        try:
-            data = json.loads(body)
-        except Exception:
+    async def search(self, author: str, title: str,
+                     indexer_ids: Optional[List[int]] = None) -> List[Dict]:
+        """Aggregated search across (optionally a subset of) Prowlarr's indexers.
+        Returns release dicts already filtered by author/title/format/size."""
+        if not self.configured():
             return []
-        raw = data.get("item") or data.get("channel", {}).get("item", [])
-        if not isinstance(raw, list):
-            raw = [raw] if raw else []
-        items: List[Dict] = []
-        for i in raw:
-            enc = i.get("enclosure")
-            enc_url = None
-            enc_type = None
-            enc_size = 0
-            if isinstance(enc, dict):
-                enc_url = enc.get("@url") or enc.get("url")
-                enc_type = enc.get("@type") or enc.get("type")
-                try: enc_size = int(enc.get("@length") or enc.get("length") or 0)
-                except (ValueError, TypeError): enc_size = 0
-            elif isinstance(enc, list):
-                for e in enc:
-                    if isinstance(e, dict):
-                        enc_url = e.get("@url") or e.get("url")
-                        enc_type = e.get("@type") or e.get("type")
-                        try: enc_size = int(e.get("@length") or e.get("length") or 0)
-                        except (ValueError, TypeError): enc_size = 0
-                        if enc_url:
-                            break
-            if not enc_size:
-                try: enc_size = int(i.get("size") or 0)
-                except (ValueError, TypeError): enc_size = 0
-            items.append({"title": i.get("title", ""), "link": i.get("link", ""),
-                          "enclosure": enc_url, "enclosure_type": enc_type, "size": enc_size})
-        return items
+        self.log(f"Searching for '{title}'...")
 
-    def _match(self, items: List[Dict], author: str, title: str) -> List[Dict]:
+        params = {
+            "query": _query_title(title),
+            "type": "search",
+            "categories": self.BOOK_CATEGORY,
+            "limit": 100,
+        }
+        if indexer_ids:
+            params["indexerIds"] = ",".join(str(i) for i in indexer_ids)
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, verify=False, follow_redirects=True,
+                                         headers=self._headers()) as client:
+                r = await client.get(f"{self.base_url}/api/v1/search", params=params)
+                if r.status_code != 200:
+                    self.log(f"Prowlarr search HTTP {r.status_code}")
+                    return []
+                releases = r.json()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log(f"Prowlarr search error: {e}")
+            return []
+
+        items: List[Dict] = []
+        for rel in releases:
+            protocol = (rel.get("protocol") or "").lower()
+            magnet = rel.get("magnetUrl") or ""
+            download = rel.get("downloadUrl") or ""
+            # Prefer magnet for torrents (no proxy round-trip needed); else downloadUrl.
+            link = magnet if (protocol == "torrent" and magnet) else download
+            if not link:
+                continue
+            kind = "torrent" if (protocol == "torrent" or link.startswith("magnet:")) else "nzb"
+            items.append({
+                "title": rel.get("title", "") or "",
+                "link": link,
+                "size": int(rel.get("size") or 0),
+                "kind": kind,
+                "indexer_id": int(rel["indexerId"]) if rel.get("indexerId") is not None else 0,
+                "indexer_name": rel.get("indexer", "?"),
+            })
+        return self._filter(items, author, title, indexer_ids)
+
+    def _filter(self, items: List[Dict], author: str, title: str,
+                indexer_ids: Optional[List[int]]) -> List[Dict]:
         results = []
-        # Two-pass title matching: try preserving the subtitle first (more specific), then
-        # fall back to subtitle-stripped form. This prevents "My Struggle: Book 2" from
-        # collapsing to "my struggle" and matching every volume in the series.
-        norm_title_full = normalize_text(title.replace(':', ' '))  # subtitle kept
-        norm_title = normalize_text(title)                          # subtitle stripped (fallback)
+        # Two-pass title match: subtitle-kept first, subtitle-stripped fallback. Stops
+        # "My Struggle: Book 2" collapsing to "my struggle" and matching every volume.
+        norm_title_full = normalize_text(title.replace(':', ' '))
+        norm_title = normalize_text(title)
         author_parts = [p for p in normalize_text(author).split() if len(p) > 2]
         for item in items:
             res_title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', item.get("title", ""))
@@ -350,15 +286,19 @@ class NewznabScraper:
             size = int(item.get("size") or 0)
             if size and size > MAX_EPUB_BYTES:
                 continue
-            link = item.get("enclosure") or item.get("link") or ""
-            link = link.replace("&amp;", "&")
-            if link:
-                results.append({
-                    "title": res_title,
-                    "link": link,
-                    "size": size,
-                    "kind": _classify_link(link, item.get("enclosure_type")),
-                })
+            results.append({
+                "title": res_title,
+                "link": item["link"],
+                "size": size,
+                "kind": item["kind"],
+                "indexer_id": item.get("indexer_id", 0),
+                "indexer_name": item.get("indexer_name", "?"),
+            })
+        # If the caller specified a priority order, sort by it so the user's preferred
+        # indexer surfaces first in the candidates UI and is tried first in batch jobs.
+        if indexer_ids:
+            order = {iid: pos for pos, iid in enumerate(indexer_ids)}
+            results.sort(key=lambda r: order.get(r.get("indexer_id", 0), len(order)))
         return results
 
     @classmethod

@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, Body, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from core import MetadataFetcher, ScraperEngine, Downloader, NewznabScraper, SabnzbdClient, QbitClient, GutenbergClient, flatten_downloads
+from core import MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient, GutenbergClient, flatten_downloads
 
 app = FastAPI()
 
@@ -177,10 +177,41 @@ async def author_books(author_id: str, author_name: str, query: str = None,
         await fetcher.aclose()
 
 
+@app.get("/indexers")
+async def indexers(u: str = Depends(current_user)):
+    """List Prowlarr indexers so the UI can show enable/priority controls."""
+    client = ProwlarrClient(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), lambda _: None)
+    if not client.configured():
+        return {"indexers": []}
+    return {"indexers": await client.list_indexers()}
+
+
+def _parse_indexer_ids(raw) -> Optional[list]:
+    """Accept either a CSV string or a list of ints; return list[int] or None."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, list):
+        out = []
+        for v in raw:
+            try: out.append(int(v))
+            except (TypeError, ValueError): pass
+        return out or None
+    if isinstance(raw, str):
+        out = []
+        for chunk in raw.split(","):
+            chunk = chunk.strip()
+            if not chunk: continue
+            try: out.append(int(chunk))
+            except ValueError: pass
+        return out or None
+    return None
+
+
 @app.get("/candidates")
-async def candidates(author: str, title: str, u: str = Depends(current_user)):
-    usenet = NewznabScraper(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), lambda _: None)
-    results = await usenet.search(author, title)
+async def candidates(author: str, title: str, indexer_ids: str = "",
+                     u: str = Depends(current_user)):
+    client = ProwlarrClient(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), lambda _: None)
+    results = await client.search(author, title, indexer_ids=_parse_indexer_ids(indexer_ids))
     return {"candidates": results}
 
 
@@ -223,7 +254,8 @@ def _library_epubs() -> set:
 async def run_background_download(job_id, data):
     def log(m): JOBS.add_log(job_id, m)
 
-    usenet = NewznabScraper(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), log)
+    indexer_ids = _parse_indexer_ids(data.get('indexer_ids'))
+    prowlarr = ProwlarrClient(os.getenv('PROWLARR_URL'), os.getenv('PROWLARR_KEY'), log)
     sab = SabnzbdClient(os.getenv('SABNZBD_URL'), os.getenv('SABNZBD_KEY'), log)
     qbit = QbitClient(
         os.getenv('QBIT_URL'),
@@ -250,14 +282,15 @@ async def run_background_download(job_id, data):
             if gut_url:
                 await downloader.download("Project Gutenberg", gut_url, data['author'], b['title'], b)
 
-            # 1. Indexer (Newznab) — try Prowlarr if configured; route NZB→SAB, torrent→qBit.
+            # 1. Indexers (Prowlarr aggregated) — route NZB→SAB, torrent→qBit.
             #    If the user pre-selected a specific candidate from /candidates, use it directly.
             if not (_library_epubs() - before):
-                if os.getenv('PROWLARR_URL') and os.getenv('PROWLARR_KEY'):
+                if prowlarr.configured():
                     if b.get('nzb_url'):
                         candidates = [{'link': b['nzb_url'], 'kind': b.get('kind', 'nzb')}]
                     else:
-                        candidates = await usenet.search(data['author'], b['title'])
+                        candidates = await prowlarr.search(data['author'], b['title'],
+                                                            indexer_ids=indexer_ids)
                     for cand in candidates[:MAX_INDEXER_TRIES]:
                         kind = cand.get('kind', 'nzb')
                         title = f"{data['author']} - {b['title']}"

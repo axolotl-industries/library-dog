@@ -293,7 +293,50 @@
             letter-spacing: 0.5px;
         }
         .kind-badge.torrent { background: rgba(179, 157, 219, 0.15); color: var(--accent); }
+        .kind-badge.usenet  { background: rgba(82, 148, 226, 0.15); color: var(--info); }
         :root[data-theme^="bbs-"] .kind-badge { border-radius: 0; }
+
+        details > summary {
+            cursor: pointer;
+            list-style: none;
+            font-size: 14px;
+            color: var(--text-muted);
+            padding: 2px 0;
+            user-select: none;
+        }
+        details > summary::-webkit-details-marker { display: none; }
+        details > summary::before {
+            content: "▸ ";
+            color: var(--text-muted);
+            display: inline-block;
+            width: 1em;
+            transition: transform 0.15s;
+        }
+        details[open] > summary::before { content: "▾ "; }
+
+        .indexer-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--card-border);
+            font-size: 14px;
+        }
+        .indexer-row:last-child { border-bottom: none; }
+        .indexer-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
+        .indexer-row .indexer-name { flex: 1; }
+        .indexer-row .indexer-name.disabled { color: var(--text-muted); }
+        .indexer-row .arrow-btn {
+            width: auto;
+            padding: 4px 10px;
+            font-size: 12px;
+            background: transparent;
+            border: 1px solid var(--card-border);
+            color: var(--text);
+        }
+        .indexer-row .arrow-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+        .indexer-row .arrow-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .indexer-hint { font-size: 12px; color: var(--text-muted); margin: 12px 0 0; }
 
         .session-header {
             display: flex;
@@ -410,6 +453,14 @@
         </span>
     </h1>
 
+    <div id="indexers-card" class="card" data-card="search" data-label=" [ INDEXERS ] " style="display:none;">
+        <details>
+            <summary id="indexers-summary">Indexers</summary>
+            <div id="indexers-list" style="margin-top:10px;"></div>
+            <p class="indexer-hint">Tick to enable. Use ↑ / ↓ to set priority — higher entries are tried first.</p>
+        </details>
+    </div>
+
     <div class="card" data-card="search" data-label=" [ SEARCH ] ">
         <div class="search-group">
             <input type="text" id="author" placeholder="Author name" onkeyup="if(event.key==='Enter') search()">
@@ -465,6 +516,106 @@
             } catch (_) {}
         })();
 
+        // --- Indexer prefs ---
+        // Stored as { enabled: [id, id, ...], disabled: [id, ...] }. Order of
+        // `enabled` is priority (first entry tried first).
+        const INDEXER_KEY = 'librarydog.indexerPrefs';
+        let _indexerCache = [];
+
+        function loadIndexerPrefs() {
+            try { return JSON.parse(localStorage.getItem(INDEXER_KEY)) || { enabled: [], disabled: [] }; }
+            catch (_) { return { enabled: [], disabled: [] }; }
+        }
+        function saveIndexerPrefs(p) {
+            try { localStorage.setItem(INDEXER_KEY, JSON.stringify(p)); } catch (_) {}
+        }
+        function activeIndexerIds() { return loadIndexerPrefs().enabled; }
+
+        async function loadIndexers() {
+            try {
+                const res = await apiFetch('/indexers');
+                const data = await res.json();
+                const indexers = data.indexers || [];
+                if (!indexers.length) {
+                    document.getElementById('indexers-card').style.display = 'none';
+                    return;
+                }
+                _indexerCache = indexers;
+
+                // Reconcile prefs against what Prowlarr reports right now: append any
+                // newly-discovered indexers to the enabled list, drop any that vanished.
+                const prefs = loadIndexerPrefs();
+                const known = new Set([...prefs.enabled, ...prefs.disabled]);
+                for (const ix of indexers) {
+                    if (!known.has(ix.id)) prefs.enabled.push(ix.id);
+                }
+                const valid = new Set(indexers.map(ix => ix.id));
+                prefs.enabled = prefs.enabled.filter(id => valid.has(id));
+                prefs.disabled = prefs.disabled.filter(id => valid.has(id));
+                saveIndexerPrefs(prefs);
+
+                renderIndexers(prefs);
+                document.getElementById('indexers-card').style.display = 'block';
+            } catch (e) {
+                document.getElementById('indexers-card').style.display = 'none';
+            }
+        }
+
+        function renderIndexers(prefs) {
+            const byId = Object.fromEntries(_indexerCache.map(ix => [ix.id, ix]));
+            const order = [...prefs.enabled, ...prefs.disabled];
+            const list = document.getElementById('indexers-list');
+            list.innerHTML = '';
+            for (const id of order) {
+                const ix = byId[id]; if (!ix) continue;
+                const enabled = prefs.enabled.includes(id);
+                const idx = prefs.enabled.indexOf(id);
+                const isFirst = idx === 0;
+                const isLast = idx === prefs.enabled.length - 1;
+                const row = document.createElement('div');
+                row.className = 'indexer-row';
+                row.innerHTML = `
+                    <input type="checkbox" ${enabled ? 'checked' : ''} data-id="${id}" onchange="toggleIndexer(${id})">
+                    <span class="indexer-name ${enabled ? '' : 'disabled'}"></span>
+                    <span class="kind-badge ${ix.protocol === 'torrent' ? 'torrent' : 'usenet'}">${ix.protocol}</span>
+                    <button class="arrow-btn" onclick="moveIndexer(${id}, -1)" ${(!enabled || isFirst) ? 'disabled' : ''} title="Higher priority">↑</button>
+                    <button class="arrow-btn" onclick="moveIndexer(${id}, 1)" ${(!enabled || isLast) ? 'disabled' : ''} title="Lower priority">↓</button>
+                `;
+                row.querySelector('.indexer-name').innerText = ix.name;
+                list.appendChild(row);
+            }
+            const summary = document.getElementById('indexers-summary');
+            if (summary) {
+                const n = prefs.enabled.length;
+                const total = _indexerCache.length;
+                summary.innerText = `Indexers (${n} of ${total} active)`;
+            }
+        }
+
+        function toggleIndexer(id) {
+            const prefs = loadIndexerPrefs();
+            if (prefs.enabled.includes(id)) {
+                prefs.enabled = prefs.enabled.filter(i => i !== id);
+                if (!prefs.disabled.includes(id)) prefs.disabled.push(id);
+            } else {
+                prefs.disabled = prefs.disabled.filter(i => i !== id);
+                if (!prefs.enabled.includes(id)) prefs.enabled.push(id);
+            }
+            saveIndexerPrefs(prefs);
+            renderIndexers(prefs);
+        }
+
+        function moveIndexer(id, delta) {
+            const prefs = loadIndexerPrefs();
+            const i = prefs.enabled.indexOf(id);
+            if (i < 0) return;
+            const j = i + delta;
+            if (j < 0 || j >= prefs.enabled.length) return;
+            [prefs.enabled[i], prefs.enabled[j]] = [prefs.enabled[j], prefs.enabled[i]];
+            saveIndexerPrefs(prefs);
+            renderIndexers(prefs);
+        }
+
         // --- Bibliography mode persistence ---
         // Strict: Wikidata's typed bibliography (cleaner, may miss oddly-classified works).
         // Permissive: trust the author link, filter for items that have a publication
@@ -495,6 +646,10 @@
             if (res.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
             return res;
         }
+
+        // Kick off indexer-list fetch on page load so the panel populates without
+        // blocking anything else.
+        loadIndexers();
 
         function fmtSize(n) {
             if (!n) return '—';
@@ -586,7 +741,8 @@
             btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Querying indexer…';
             document.getElementById('candidates-card').style.display = 'none';
             try {
-                const res = await apiFetch(`/candidates?author=${encodeURIComponent(currentAuthor)}&title=${encodeURIComponent(book.title)}`);
+                const idsParam = activeIndexerIds().join(',');
+                const res = await apiFetch(`/candidates?author=${encodeURIComponent(currentAuthor)}&title=${encodeURIComponent(book.title)}&indexer_ids=${encodeURIComponent(idsParam)}`);
                 const data = await res.json();
                 if (!data.candidates || !data.candidates.length) {
                     await launchJob([book]);
@@ -627,7 +783,7 @@
             const res = await apiFetch('/start_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ author: currentAuthor, books })
+                body: JSON.stringify({ author: currentAuthor, books, indexer_ids: activeIndexerIds() })
             });
             const { job_id } = await res.json();
             createSession(job_id, currentAuthor, books.length);

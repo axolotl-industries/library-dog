@@ -29,8 +29,13 @@ services:
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
 
       # --- Indexers / downloaders (optional) ---
-      # Point at a Prowlarr indexer (its per-indexer URL, not Prowlarr's root).
-      # Without these, Library Dog falls back to Project Gutenberg only.
+      # Point at Prowlarr's API root (NOT a per-indexer URL — that's the legacy
+      # form). Library Dog enumerates every indexer Prowlarr knows about and lets
+      # you enable / disable / prioritise them in the UI. Legacy URLs ending in
+      # /<id> still work (the trailing segment is stripped), but you'll only see
+      # one indexer.
+      #   New form: http://prowlarr:9696
+      #   Legacy:   http://prowlarr:9696/15   (still tolerated)
       - PROWLARR_URL=${PROWLARR_URL:-}
       - PROWLARR_KEY=${PROWLARR_KEY:-}
       # SABnzbd for any NZB results returned by the indexer.

@@ -656,7 +656,7 @@ class WikidataBibliography:
         """Get a realistic work count from Wikidata."""
         query = f"""
         SELECT (COUNT(DISTINCT ?item) AS ?count) WHERE {{
-          ?item wdt:P50 wd:{author_id}.
+          {{ ?item wdt:P50 wd:{author_id} }} UNION {{ ?item wdt:P98 wd:{author_id} }}
           ?item wdt:P31/wdt:P279* ?type .
           VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
         }}
@@ -678,11 +678,16 @@ class WikidataBibliography:
                          results, but Wikidata's class hierarchy is
                          inconsistent enough that some real books leak through
                          the cracks.
-          'permissive' — drop the type filter, trust P50 (author), and noise-
-                         filter app-side: keep only items that have a
-                         publication date (P577) or an ISBN (P212/P957). That
-                         's the "this thing was published as a discrete book"
+          'permissive' — drop the type filter, trust the credit relationship
+                         (P50 author or P98 editor), and noise-filter
+                         app-side: keep only items that have a publication
+                         date (P577) or an ISBN (P212/P957). That's the
+                         "this thing was published as a discrete book"
                          proxy.
+
+        Both modes match anthology editors via P98 alongside straight
+        authors via P50, so people like Ellen Datlow / Gardner Dozois
+        whose careers are mostly anthology editing show up properly.
         """
         author_id = await self._get_author_id(author_name)
         if not author_id:
@@ -693,7 +698,7 @@ class WikidataBibliography:
         if mode == "permissive":
             query = f"""
             SELECT DISTINCT ?item ?itemLabel ?date ?isbn WHERE {{
-              ?item wdt:P50 wd:{author_id}.
+              {{ ?item wdt:P50 wd:{author_id} }} UNION {{ ?item wdt:P98 wd:{author_id} }}
               OPTIONAL {{ ?item wdt:P577 ?date . }}
               OPTIONAL {{ ?item wdt:P212 ?isbn . }}
               OPTIONAL {{ ?item wdt:P957 ?isbn . }}
@@ -704,7 +709,7 @@ class WikidataBibliography:
         else:
             query = f"""
             SELECT DISTINCT ?item ?itemLabel ?date ?isbn WHERE {{
-              ?item wdt:P50 wd:{author_id}.
+              {{ ?item wdt:P50 wd:{author_id} }} UNION {{ ?item wdt:P98 wd:{author_id} }}
               ?item wdt:P31/wdt:P279* ?type .
               VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
               OPTIONAL {{ ?item wdt:P577 ?date . }}

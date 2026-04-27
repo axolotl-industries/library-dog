@@ -253,7 +253,7 @@ class ProwlarrClient:
                                          headers=self._headers()) as client:
                 r = await client.get(f"{self.base_url}/api/v1/indexer")
                 if r.status_code != 200:
-                    self.log(f"Prowlarr indexer list HTTP {r.status_code}")
+                    self.log(f"Prowlarr indexer list HTTP {r.status_code}: {r.text[:300]}")
                     return []
                 data = r.json()
                 out = []
@@ -299,7 +299,7 @@ class ProwlarrClient:
                                          headers=self._headers()) as client:
                 r = await client.get(f"{self.base_url}/api/v1/search", params=params)
                 if r.status_code != 200:
-                    self.log(f"Prowlarr search HTTP {r.status_code}")
+                    self.log(f"Prowlarr search HTTP {r.status_code} for url={r.request.url}: {r.text[:400]}")
                     return []
                 releases = r.json()
         except asyncio.CancelledError:

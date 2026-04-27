@@ -185,10 +185,8 @@ class NewznabScraper:
 
     async def search(self, author: str, title: str) -> List[Dict]:
         if not self.api_url or not self.api_key:
-            self.log("DEBUG: indexer skipped — PROWLARR_URL or PROWLARR_KEY unset")
             return []
-        query = _query_title(title)
-        self.log(f"Searching Usenet for '{title}' (q={query!r}, indexer={self.api_url})")
+        self.log(f"Searching Usenet for '{title}'...")
 
         url = f"{self.api_url}/api"
         # Newznab standard is an unquoted, space-separated query. Literal quotes around the phrase
@@ -200,7 +198,7 @@ class NewznabScraper:
         params = {
             "t": "search",
             "cat": "7020",
-            "q": query,
+            "q": _query_title(title),
             "apikey": self.api_key,
         }
         headers = {
@@ -227,10 +225,7 @@ class NewznabScraper:
                     return []
 
                 items = self._parse(body, ctype)
-                self.log(f"DEBUG: indexer returned {len(items)} raw item(s)")
-                matched = self._match(items, author, title)
-                self.log(f"DEBUG: {len(matched)} candidate(s) survived author/title/format/size filters")
-                return matched
+                return self._match(items, author, title)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -343,24 +338,17 @@ class NewznabScraper:
         norm_title_full = normalize_text(title.replace(':', ' '))  # subtitle kept
         norm_title = normalize_text(title)                          # subtitle stripped (fallback)
         author_parts = [p for p in normalize_text(author).split() if len(p) > 2]
-        skipped = {"title": 0, "author": 0, "format": 0, "size": 0}
         for item in items:
             res_title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', item.get("title", ""))
             norm_res_title = normalize_text(res_title)
             title_match = norm_title_full in norm_res_title or norm_title in norm_res_title
             author_match = any(p in norm_res_title for p in author_parts) if author_parts else True
-            if not title_match:
-                skipped["title"] += 1
-                continue
-            if not author_match:
-                skipped["author"] += 1
+            if not (title_match and author_match):
                 continue
             if not self._looks_like_epub(res_title):
-                skipped["format"] += 1
                 continue
             size = int(item.get("size") or 0)
             if size and size > MAX_EPUB_BYTES:
-                skipped["size"] += 1
                 continue
             link = item.get("enclosure") or item.get("link") or ""
             link = link.replace("&amp;", "&")
@@ -371,15 +359,6 @@ class NewznabScraper:
                     "size": size,
                     "kind": _classify_link(link, item.get("enclosure_type")),
                 })
-        if items and not results:
-            self.log(
-                f"DEBUG: rejected all {len(items)} indexer item(s) — "
-                f"title-mismatch={skipped['title']} author-mismatch={skipped['author']} "
-                f"non-epub={skipped['format']} oversize={skipped['size']}"
-            )
-            # Sample a few raw titles so the user can see what the indexer is actually returning.
-            for raw in items[:3]:
-                self.log(f"DEBUG: sample raw release title: {raw.get('title','')!r}")
         return results
 
     @classmethod
@@ -410,9 +389,7 @@ class SabnzbdClient:
         self.log = log_func
 
     async def add_url(self, nzb_url: str, title: str) -> Optional[str]:
-        if not self.url or not self.api_key:
-            self.log("DEBUG: SAB skipped — SABNZBD_URL or SABNZBD_KEY unset")
-            return None
+        if not self.url or not self.api_key: return None
         params = {
             "mode": "addurl",
             "name": nzb_url,
@@ -424,13 +401,11 @@ class SabnzbdClient:
         try:
             async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True, headers={"User-Agent": UA}) as client:
                 resp = await client.get(f"{self.url}/api", params=params)
-                self.log(f"DEBUG: SAB addurl HTTP {resp.status_code}")
                 data = resp.json()
                 if data.get("status") and data.get("nzo_ids"):
                     nzo_id = data["nzo_ids"][0]
-                    self.log(f"Added to download queue (nzo_id={nzo_id}).")
+                    self.log(f"Added to download queue.")
                     return nzo_id
-                self.log(f"DEBUG: SAB addurl rejected: {data}")
         except asyncio.CancelledError: raise
         except Exception as e:
             self.log(f"SABnzbd error: {e}")
@@ -457,10 +432,7 @@ class SabnzbdClient:
                 q_data = resp.json()
                 slots = q_data.get("queue", {}).get("slots", [])
                 for s in slots:
-                    if s.get("nzo_id") == nzo_id:
-                        self.log(f"DEBUG: SAB queue {nzo_id}: {s.get('status','?')} {s.get('percentage','?')}%")
-                        return "downloading"
-                self.log(f"DEBUG: SAB {nzo_id} no longer in queue, checking history")
+                    if s.get("nzo_id") == nzo_id: return "downloading"
 
                 # 2. Check History
                 resp = await client.get(f"{self.url}/api", params={"mode": "history", "nzo_id": nzo_id, "apikey": self.api_key, "output": "json"})
@@ -469,16 +441,11 @@ class SabnzbdClient:
                 for s in slots:
                     if s.get("nzo_id") == nzo_id:
                         status = s.get("status", "").lower()
-                        storage = s.get("storage", "?")
-                        fail_msg = s.get("fail_message", "")
-                        self.log(f"DEBUG: SAB history {nzo_id}: status={status!r} storage={storage!r}"
-                                 + (f" fail_message={fail_msg!r}" if fail_msg else ""))
                         if status == "completed": return "completed"
                         if "failed" in status: return "failed"
-                        # Job is in history with a status we don't recognise (e.g. "extracting").
-                        # Treat as still in progress so we keep polling.
+                        # In history with an unrecognised status (e.g. "Extracting") —
+                        # keep polling rather than treating as terminal.
                         return "downloading"
-                self.log(f"DEBUG: SAB {nzo_id} not found in queue OR history — disappeared")
         except asyncio.CancelledError: raise
         except Exception as e:
             self.log(f"SABnzbd status check error: {e}")
@@ -1019,16 +986,12 @@ class GutenbergClient:
             n = normalize_text(s)
             return norm_title_full in n or norm_title in n
 
-        log(f"DEBUG: querying Gutenberg with q={query!r}")
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": UA}) as client:
                 resp = await client.get(self._API, params={"search": query})
                 if resp.status_code != 200:
-                    log(f"DEBUG: Gutenberg HTTP {resp.status_code}")
                     return None
-                results = resp.json().get("results", [])
-                log(f"DEBUG: Gutenberg returned {len(results)} result(s)")
-                for book in results:
+                for book in resp.json().get("results", []):
                     if not _title_match(book.get("title", "")):
                         continue
                     raw_authors = " ".join(a.get("name", "") for a in book.get("authors", []))
@@ -1059,15 +1022,9 @@ class Downloader:
             try:
                 async with httpx.AsyncClient(follow_redirects=True, timeout=60.0, headers={"User-Agent": UA}, **cfg) as client:
                     async with client.stream("GET", url) as resp:
-                        ctype = resp.headers.get("Content-Type", "")
-                        clen = resp.headers.get("Content-Length", "?")
-                        self.log(f"DEBUG: {mirror} GET → HTTP {resp.status_code} ctype={ctype!r} len={clen}")
-                        if resp.status_code != 200 or "text/html" in ctype.lower():
-                            continue
-                        size = int(clen) if clen.isdigit() else 0
-                        if size > 0 and (size < 10000 or size > 40*1024*1024):
-                            self.log(f"DEBUG: {mirror} rejected: size {size} out of [10000, 40MB]")
-                            continue
+                        if resp.status_code != 200 or "text/html" in resp.headers.get("Content-Type", "").lower(): continue
+                        size = int(resp.headers.get("Content-Length", 0))
+                        if size > 0 and (size < 10000 or size > 40*1024*1024): continue
                         self.log(f"Downloading from {mirror}...")
                         with open(path, "wb") as f:
                             async for chunk in resp.aiter_bytes(): f.write(chunk)
@@ -1077,11 +1034,9 @@ class Downloader:
                         if 'mimetype' in z.namelist():
                             await self._enrich_epub(path, author, title, book_data)
                             self.log(f"Saved to: {path}"); return True
-                self.log(f"DEBUG: {mirror} payload not a valid EPUB; discarding")
                 if os.path.exists(path): os.remove(path)
             except asyncio.CancelledError: raise
-            except Exception as e:
-                self.log(f"DEBUG: {mirror} download exception: {type(e).__name__}: {e}")
+            except Exception:
                 if os.path.exists(path): os.remove(path)
         return False
 

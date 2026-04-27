@@ -644,7 +644,7 @@ class WikidataBibliography:
         SELECT (COUNT(DISTINCT ?item) AS ?count) WHERE {{
           ?item wdt:P50 wd:{author_id}.
           ?item wdt:P31/wdt:P279* ?type .
-          VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q49084 wd:Q1144673 }}
+          VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
         }}
         """
         try:
@@ -666,7 +666,7 @@ class WikidataBibliography:
         SELECT DISTINCT ?itemLabel ?date WHERE {{
           ?item wdt:P50 wd:{author_id}.
           ?item wdt:P31/wdt:P279* ?type .
-          VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q49084 wd:Q1144673 }}
+          VALUES ?type {{ wd:Q7725634 wd:Q571 wd:Q47461344 wd:Q49084 wd:Q1144673 }}
           SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
         }}
         ORDER BY ?date

@@ -1138,7 +1138,7 @@ class Downloader:
                 if zipfile.is_zipfile(path):
                     with zipfile.ZipFile(path) as z:
                         if 'mimetype' in z.namelist():
-                            await self._enrich_epub(path, author, title, book_data)
+                            await self._enrich_epub(path, author, title, book_data, source=mirror)
                             self.log(f"Saved to: {path}"); return True
                 if os.path.exists(path): os.remove(path)
             except asyncio.CancelledError: raise
@@ -1146,7 +1146,15 @@ class Downloader:
                 if os.path.exists(path): os.remove(path)
         return False
 
-    async def _enrich_epub(self, path: str, author: str, title: str, book_data: Dict) -> None:
+    # EPUBs we got from a non-canonical source (Anna's Archive / Libgen / IPFS
+    # mirrors) deserve a "needs review" tag so the user knows to double-check
+    # them in Calibre before pushing to CWA / their reading library. Project
+    # Gutenberg is canonical and exempt.
+    _CANONICAL_SOURCES = {"Project Gutenberg"}
+    _REVIEW_TAG = "Library Dog: needs review"
+
+    async def _enrich_epub(self, path: str, author: str, title: str,
+                            book_data: Dict, source: Optional[str] = None) -> None:
         """Embed authoritative metadata into the EPUB before it lands in the watched
         folder Calibre-Web-Automated picks up. Each step is best-effort so a single
         ebookmeta API quirk doesn't lose the whole download.
@@ -1184,6 +1192,17 @@ class Downloader:
 
         try: meta.lang = "en"
         except Exception: pass
+
+        # Tag for grey-source review. Calibre Desktop reads dc:subject as tags,
+        # so the user can filter on this in their library audit workflow.
+        if source and source not in self._CANONICAL_SOURCES:
+            try:
+                existing = list(getattr(meta, 'tag_list', None) or [])
+                if self._REVIEW_TAG not in existing:
+                    existing.append(self._REVIEW_TAG)
+                meta.tag_list = existing
+            except Exception:
+                pass
 
         # Cover. OpenLibrary's covers API serves a 404 for ?default=false when no
         # cover is on file, so we don't get a 1×1 placeholder embedded in the EPUB.

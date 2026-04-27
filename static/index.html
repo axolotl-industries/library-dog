@@ -1177,7 +1177,11 @@
                 <div class="session-log" id="log-${jobId}"></div>
             `;
             document.getElementById('sessions').prepend(panel);
-            activeSessions[jobId] = { ev: null, done: 0, total, logIndex: 0, running: true, closeOnDone: false };
+            activeSessions[jobId] = {
+                ev: null, done: 0, total, logIndex: 0,
+                running: true, closeOnDone: false,
+                author, failedTitles: [],
+            };
             openStream(jobId);
         }
 
@@ -1224,6 +1228,9 @@
 
                 const cls = classifyLog(msg);
                 if (cls && cls.count) s.done++;
+                if (msg.startsWith('FAILED:')) {
+                    s.failedTitles.push(msg.slice('FAILED:'.length).trim());
+                }
                 updateProgress(jobId);
 
                 if (cls) {
@@ -1240,11 +1247,47 @@
                     s.running = false;
                     const btn = document.getElementById(`dismiss-${jobId}`);
                     if (btn) btn.classList.remove('running');
+                    if (s.failedTitles.length) renderFailures(jobId);
                     if (s.closeOnDone) closeSession(jobId);
                 }
             };
 
             ev.onerror = () => { ev.close(); setTimeout(() => openStream(jobId), 2000); };
+        }
+
+        function renderFailures(jobId) {
+            const s = activeSessions[jobId];
+            if (!s || !s.failedTitles.length) return;
+            const panel = document.getElementById(`session-${jobId}`);
+            if (!panel) return;
+            // Drop any prior render so reconnect-after-disconnect doesn't double up.
+            const existing = panel.querySelector('.failure-panel');
+            if (existing) existing.remove();
+
+            const author = encodeURIComponent(s.author);
+            const rows = s.failedTitles.map(title => {
+                const t = encodeURIComponent(title);
+                const annas    = `https://annas-archive.org/search?q=${author}+${t}`;
+                const libgen   = `https://libgen.li/index.php?req=${author}+${t}&res=25&filesuns=all`;
+                const bookshop = `https://bookshop.org/search?keywords=${author}+${t}`;
+                return `<tr>
+                    <td style="text-transform:none">${title}</td>
+                    <td><a class="btn-inline btn-secondary" target="_blank" rel="noopener" href="${annas}">Anna's</a></td>
+                    <td><a class="btn-inline btn-secondary" target="_blank" rel="noopener" href="${libgen}">Libgen</a></td>
+                    <td><a class="btn-inline btn-secondary" target="_blank" rel="noopener" href="${bookshop}">Bookshop</a></td>
+                </tr>`;
+            }).join('');
+            const html = `
+                <div class="failure-panel" style="margin-top:14px;">
+                    <h4 style="margin:0 0 8px;color:var(--error);">Manual search for ${s.failedTitles.length} failed download${s.failedTitles.length !== 1 ? 's' : ''}</h4>
+                    <div class="table-container">
+                        <table>
+                            <tr><th>Title</th><th colspan="3">Manual search</th></tr>
+                            ${rows}
+                        </table>
+                    </div>
+                </div>`;
+            panel.insertAdjacentHTML('beforeend', html);
         }
 
         async function dismissSession(jobId) {

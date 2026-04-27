@@ -54,6 +54,17 @@ if you're on a private tracker.
    qBit keeps seeding the original file. MAM / Bibliotik users won't
    have their ratio tanked.
 
+## Image variants
+
+Two flavours, published to GHCR on every push to `main` and on `v*` tags:
+
+- **Standard** (`...:latest`, `...:main`, `...:v1.2.3`) — ~150 MB.
+  Project Gutenberg + Newznab indexers via Prowlarr. The right image
+  for almost everyone.
+- **Grey** (`...:latest-grey`, `...:main-grey`, `...:v1.2.3-grey`) —
+  ~700 MB. Adds Playwright + Chromium for Anna's Archive / Libgen
+  scraping when `ENABLE_GREY_SOURCES=true` is set.
+
 ## Quick start
 
 ```yaml
@@ -167,10 +178,13 @@ Setup:
   (if configured). Available when `PROWLARR_URL` and `PROWLARR_KEY`
   are set.
 - **Anna's Archive / Libgen mirrors** — opt-in via
-  `ENABLE_GREY_SOURCES=true`. Drags in a Playwright/Chromium
-  runtime to deal with their JS-resolved download links, and is
-  legally grey in many jurisdictions. Off by default for both
-  reasons.
+  `ENABLE_GREY_SOURCES=true` *and* the **`-grey` image variant**.
+  Setting the env var on the standard image will be downgraded to
+  off at startup with a warning, since the standard image doesn't
+  ship Playwright/Chromium. Use
+  `ghcr.io/axolotl-industries/library-dog:latest-grey` (or pin to a
+  semver-grey tag) when you actually want this. Legally grey in many
+  jurisdictions; off by default.
 
 ### A note on indie authors
 
@@ -251,9 +265,8 @@ this.
   with whatever the source carried.
 - Multi-format support reaches Prowlarr indexer results only —
   Project Gutenberg + Anna's / Libgen mirrors still only fetch EPUB.
-- Image carries Playwright + Chromium unconditionally (~700MB)
-  even when `ENABLE_GREY_SOURCES=false`. Conditional install is
-  a follow-up.
+- The `-grey` image carries Playwright + Chromium and is ~700MB,
+  vs ~150MB for the standard image. There's no in-between today.
 
 PRs welcome on any of these.
 

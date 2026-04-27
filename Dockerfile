@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Whether to install Playwright + Chromium for Anna's Archive / Libgen
+# scraping. False by default → small image (~150MB). True for the
+# '-grey' build variant in CI → large image (~700MB).
+ARG INSTALL_PLAYWRIGHT=false
+
 # gosu drops privileges in the entrypoint without su's TTY/process-group quirks.
 # tini reaps zombies cleanly when Playwright crashes a Chromium child.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,15 +30,18 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright
 RUN mkdir -p /app/.cache/ms-playwright /app/downloads /app/torrents && \
     chown -R librarydog:librarydog /app
 
-COPY --chown=librarydog:librarydog requirements.txt .
+COPY --chown=librarydog:librarydog requirements.txt requirements-grey.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Playwright browsers + system deps. install-deps must run as root for apt-get.
-# install (download) runs as root too; we re-chown the cache afterward so the
-# librarydog user can update browser caches at runtime.
-RUN playwright install chromium && \
-    playwright install-deps chromium && \
-    chown -R librarydog:librarydog /app/.cache
+# Conditional grey-sources install: pip + chromium binary + system deps.
+# Skipped entirely in the standard image, which keeps it ~150MB and removes
+# Playwright import overhead from cold start.
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-grey.txt && \
+        playwright install chromium && \
+        playwright install-deps chromium && \
+        chown -R librarydog:librarydog /app/.cache ; \
+    fi
 
 COPY --chown=librarydog:librarydog . .
 RUN chmod +x /app/entrypoint.sh

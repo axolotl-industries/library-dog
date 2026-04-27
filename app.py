@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from core import (
     MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient,
-    GutenbergClient, flatten_downloads, hardlink_books_to_root,
+    GutenbergClient, flatten_downloads, hardlink_books_to_root, has_playwright,
 )
 
 app = FastAPI()
@@ -274,7 +274,17 @@ QBIT_CATEGORY = os.getenv("QBIT_CATEGORY", "books")
 # Anna's Archive and Libgen scraping. Off by default — these sources are legally grey
 # in many jurisdictions and the scraping path drags in Playwright/Chromium. Project
 # Gutenberg + Newznab indexers stay always-on regardless.
+#
+# Playwright lives in the '-grey' image variant only; if a user opts in on the
+# standard image, downgrade to off at startup with a clear warning rather than
+# letting the first download crash.
 ENABLE_GREY_SOURCES = os.getenv("ENABLE_GREY_SOURCES", "").lower() in ("1", "true", "yes")
+if ENABLE_GREY_SOURCES and not has_playwright():
+    print("[library-dog] WARN: ENABLE_GREY_SOURCES=true but this image was built without "
+          "Playwright. Pull the '-grey' image variant (e.g. ...:latest-grey) to enable "
+          "Anna's Archive / Libgen scraping. Disabling grey sources for this run.",
+          file=sys.stderr)
+    ENABLE_GREY_SOURCES = False
 
 
 def _library_epubs() -> set:

@@ -2,6 +2,14 @@ version: '3.8'
 
 services:
   library-dog:
+    # Default build is the standard image (~150MB, no Playwright). For Anna's
+    # Archive / Libgen scraping, build with INSTALL_PLAYWRIGHT=true:
+    #   build:
+    #     context: .
+    #     args:
+    #       INSTALL_PLAYWRIGHT: "true"
+    # Or use the published '-grey' image variant from GHCR:
+    #   image: ghcr.io/axolotl-industries/library-dog:latest-grey
     build: .
     ports:
       - "80:80"

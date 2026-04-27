@@ -1,0 +1,6 @@
+# Extra dependencies installed only into the '-grey' image variant
+# (built with INSTALL_PLAYWRIGHT=true). These power Anna's Archive /
+# Libgen scraping via headless Chromium, which is opt-in.
+greenlet==3.2.5
+playwright==1.58.0
+pyee==13.0.1

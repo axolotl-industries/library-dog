@@ -12,7 +12,10 @@ from pathlib import Path
 
 from typing import List, Dict, Optional, Tuple, Generator, Callable
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright, Browser
+# Playwright is only imported lazily inside ScraperEngine — it's only present
+# in the 'grey' image variant (built with INSTALL_PLAYWRIGHT=true). Importing
+# it at module scope would crash the standard image on startup even when
+# nobody's asked for grey sources.
 from urllib.parse import quote, urljoin
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -959,6 +962,15 @@ class MetadataFetcher:
         m = re.search(r'\b(1[89]\d{2}|20\d{2})\b', str(date_value))
         return int(m.group()) if m else None
 
+def has_playwright() -> bool:
+    """Probe for Playwright. Only the 'grey' image variant ships with it."""
+    try:
+        import playwright  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 class ScraperEngine:
     def __init__(self, log_func: Callable):
         self.log = log_func
@@ -966,9 +978,23 @@ class ScraperEngine:
         self.client = httpx.AsyncClient(verify=False, timeout=20.0, follow_redirects=True, headers={"User-Agent": UA})
 
     async def start(self):
+        # Lazy import — Playwright is only in the -grey image. If we get here on
+        # the standard image, raise with a clear message rather than letting an
+        # ImportError surface from the import line itself.
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            raise RuntimeError(
+                "ENABLE_GREY_SOURCES=true but Playwright is not installed in this image. "
+                "Pull the -grey image variant (e.g. ghcr.io/axolotl-industries/library-dog:latest-grey) "
+                "or set ENABLE_GREY_SOURCES=false."
+            )
         self.annas_base = await resolve_annas_domain(self.log)
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"])
+        self.browser = await self.playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        )
 
     async def stop(self):
         try:
@@ -977,7 +1003,7 @@ class ScraperEngine:
         except: pass
         await self.client.aclose()
 
-    async def _resolve_mirror(self, url: str, page: Browser) -> Optional[str]:
+    async def _resolve_mirror(self, url: str, page) -> Optional[str]:
         try:
             await page.goto(url, timeout=15000)
             link = BeautifulSoup(await page.content(), 'html.parser').find('a', href=re.compile(r"get\.php|/get/|download", re.I))

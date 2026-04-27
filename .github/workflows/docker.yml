@@ -13,6 +13,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          # Standard: no Playwright. Image ~150MB. Tags: latest, main, v1.2.3, etc.
+          - { name: standard, install_playwright: "false", suffix: "" }
+          # Grey: Playwright + Chromium for Anna's / Libgen. Image ~700MB.
+          # Tags: latest-grey, main-grey, v1.2.3-grey, etc.
+          - { name: grey,     install_playwright: "true",  suffix: "-grey" }
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +40,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/axolotl-industries/library-dog
+          flavor: |
+            suffix=${{ matrix.flavor.suffix }},onlatest=true
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -43,8 +54,10 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          build-args: |
+            INSTALL_PLAYWRIGHT=${{ matrix.flavor.install_playwright }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.flavor.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.flavor.name }}

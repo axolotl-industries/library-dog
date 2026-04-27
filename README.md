@@ -60,8 +60,8 @@ services:
 ```
 
 `./downloads` is what you point Calibre-Web-Automated's ingest folder
-at. Library Dog flattens everything to a single directory of `.epub`
-files — no subfolders, no `.nfo`, no `.mobi`.
+at. Library Dog flattens everything to a single directory of book
+files — no subfolders, no `.nfo`, no cruft.
 
 There's also a `docker-compose.yml` in the repo with every supported
 env var documented inline.

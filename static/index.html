@@ -416,6 +416,14 @@
         :root[data-chrome="bbs"] .kind-badge { border-radius: 0; }
         tr.owned-row td { opacity: 0.6; }
 
+        /* Inline checkbox+label rows. Default input rule is width:100% / padding:12px,
+           which makes a bare checkbox stretch to fill its container and shove the
+           label onto a second line. Scope an override to checkboxes inside this
+           container, matching the .indexer-row pattern. */
+        .inline-toggle { font-size: 13px; margin-bottom: 10px; }
+        .inline-toggle label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+        .inline-toggle input[type="checkbox"] { width: auto; padding: 0; margin: 0; flex-shrink: 0; }
+
         details > summary {
             cursor: pointer;
             list-style: none;
@@ -884,8 +892,8 @@
 
     <div id="results-card" class="card" data-card="results" data-label=" [ RESULTS ] " style="display:none;">
         <h3 id="author-title"></h3>
-        <div id="library-toggle-wrap" style="display:none; margin-bottom:10px; font-size:13px;">
-            <label style="cursor:pointer;"><input type="checkbox" id="hide-owned-chk" onchange="onToggleHideOwned()"> Hide books already in library</label>
+        <div id="library-toggle-wrap" class="inline-toggle" style="display:none;">
+            <label><input type="checkbox" id="hide-owned-chk" onchange="onToggleHideOwned()"> Hide books already in library</label>
         </div>
         <div class="table-container"><div id="results-list"></div></div>
         <div style="margin-top: 18px;">

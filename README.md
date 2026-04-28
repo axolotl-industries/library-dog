@@ -203,9 +203,25 @@ library server rather than reusing admin credentials.
 When configured, books in the bibliography that are already in your library
 get an "In Library" badge and are unticked by default. A "Hide books already
 in library" toggle (persisted to `localStorage`) lets you collapse them out
-of the picker entirely once you trust the matches. Match is by normalised
-title against entries the OPDS feed credits to the searched author; failures
-fall through silently and the bibliography is shown unannotated.
+of the picker entirely once you trust the matches.
+
+Match strategy is per-book — Library Dog runs an OPDS title query for each
+book in the bibliography and looks at the returned entries:
+
+- **ISBN match** (preferred). If our bibliography ISBN appears in any
+  catalog entry's `<dc:identifier>`, the book is considered owned. This is
+  edition-precise and immune to title variations or author-credit quirks.
+- **Title + author fallback**. If no ISBN match, accept entries whose
+  normalised title prefix-matches the bibliography title (with a 2-token
+  minimum to keep "The Dark" from colliding with "The Dark Tower"), AND
+  whose authors satisfy any one of: queried author credited; entry credited
+  only to a generic placeholder ("Anthology" / "Various"); 3+ contributors
+  listed (compilation pattern).
+
+Per-book queries fan out via `asyncio.gather` with a 10-way concurrency
+limit, so even a 60-book bibliography against an in-LAN OPDS server resolves
+in a couple of seconds. Failures fall through silently and the bibliography
+is shown unannotated.
 
 ## Sources
 

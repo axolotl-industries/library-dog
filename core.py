@@ -417,12 +417,14 @@ class OpdsClient:
 
     ATOM_NS = "{http://www.w3.org/2005/Atom}"
     OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
+    DCTERMS_NS = "{http://purl.org/dc/terms/}"
+    DC_NS = "{http://purl.org/dc/elements/1.1/}"
 
     # Generic-placeholder authors many catalogs use for compilations when no
     # individual editor is recorded. An entry credited only to one of these is
-    # accepted into the owned-set on the strength of its title alone, since
-    # anthology editors (Datlow, Dozois, etc.) frequently land in libraries
-    # under these placeholders rather than under their own name.
+    # accepted on the strength of its title match alone, since anthology
+    # editors (Datlow, Dozois, etc.) frequently land in libraries under these
+    # placeholders rather than under their own name.
     _GENERIC_AUTHORS = {"anthology", "various", "various authors"}
 
     def __init__(self, base_url: str, username: str, password: str, log_func: Callable = print):
@@ -438,56 +440,152 @@ class OpdsClient:
     def _auth(self):
         return (self.username, self.password) if self.username else None
 
-    async def owned_titles(self, author: str) -> set:
-        """Return normalised titles by `author` already in the library.
+    async def book_owned(self, author: str, title: str,
+                         isbns: Optional[List[str]] = None) -> bool:
+        """Per-book check: is this exact book already in the OPDS catalog?
 
-        Empty set on any failure or when not configured — callers treat that
-        as "no annotation" rather than blocking the bibliography fetch.
+        Strategy, in priority order:
+          1. ISBN match. The bibliography's ISBN(s) compared against any
+             <dc:identifier>urn:isbn:...</dc:identifier> on the catalog entry.
+             Definitive — the same ISBN guarantees the same edition / book,
+             so no further checks needed.
+          2. Title + author fallback. Token-prefix title match (with a 2-token
+             minimum to avoid 'The Dark' colliding with 'The Dark Tower'),
+             AND any of: queried author credited, generic-placeholder author
+             ('Anthology' / 'Various'), or 3+ contributors (compilation).
+
+        Returns False on any failure or when not configured — callers treat
+        the absence of a positive match as 'unowned' rather than retrying.
         """
-        if not self.configured() or not author.strip():
-            return set()
+        if not self.configured() or not title.strip():
+            return False
         try:
             template = await self._resolve_search_template()
             if not template:
-                return set()
+                return False
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self.log(f"OPDS search discovery failed: {e}")
-            return set()
+            return False
 
-        author_norm = normalize_text(author)
-        if not author_norm:
-            return set()
+        bib_isbns = {self._canon_isbn(i) for i in (isbns or []) if i}
+        bib_isbns.discard("")
+        author_norm = normalize_text(author or "")
 
-        url = template.replace("{searchTerms}", quote(author))
-        seen: set = set()
+        url = template.replace("{searchTerms}", quote(title))
         try:
             async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True,
                                          headers={"User-Agent": UA,
                                                   "Accept": "application/atom+xml"},
                                          auth=self._auth()) as client:
                 pages = 0
-                # Cap pagination to keep a misbehaving server from hanging us.
-                # Five pages of typical OPDS page size (~25 entries) covers any
-                # realistic single-author shelf.
-                while url and pages < 5:
+                # Three pages of OPDS results is plenty for a per-title query
+                # — generic titles like "Echoes" will run further but the first
+                # page's relevance ranking carries the matches we want.
+                while url and pages < 3:
                     r = await client.get(url)
                     if r.status_code == 401:
                         self.log("OPDS: 401 Unauthorized — check OPDS_USERNAME / OPDS_PASSWORD.")
-                        return set()
+                        return False
                     if r.status_code != 200:
-                        self.log(f"OPDS search HTTP {r.status_code}: {r.text[:200]}")
-                        return set()
-                    next_href = self._parse_feed(r.text, author_norm, seen)
-                    url = urljoin(str(r.url), next_href) if next_href else None
+                        return False
+                    try:
+                        root = ET.fromstring(r.text)
+                    except ET.ParseError as e:
+                        self.log(f"OPDS feed parse error: {e}")
+                        return False
+
+                    for entry in root.findall(f"{self.ATOM_NS}entry"):
+                        if self._entry_matches(entry, title, author_norm, bib_isbns):
+                            return True
+
+                    next_url = None
+                    for link in root.findall(f"{self.ATOM_NS}link"):
+                        if link.get("rel") == "next" and link.get("href"):
+                            next_url = link.get("href")
+                            break
+                    url = urljoin(str(r.url), next_url) if next_url else None
                     pages += 1
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self.log(f"OPDS search error: {e}")
-            return set()
-        return seen
+            return False
+        return False
+
+    def _entry_matches(self, entry, queried_title: str, author_norm: str,
+                       bib_isbns: set) -> bool:
+        """Decide whether one OPDS <entry> matches the queried bibliography
+        book. ISBN match wins outright; otherwise title+author rules apply."""
+        # ISBN path — definitive when both sides have ISBNs.
+        if bib_isbns:
+            entry_isbns = self._extract_isbns(entry)
+            if bib_isbns & entry_isbns:
+                return True
+
+        title_el = entry.find(f"{self.ATOM_NS}title")
+        if title_el is None or not (title_el.text or "").strip():
+            return False
+        if not self._title_match(queried_title, title_el.text):
+            return False
+
+        authors_norm: List[str] = []
+        for a in entry.findall(f"{self.ATOM_NS}author"):
+            n = a.find(f"{self.ATOM_NS}name")
+            if n is not None and n.text:
+                authors_norm.append(normalize_text(n.text))
+        credited = any(author_norm == n or author_norm in n or n in author_norm
+                       for n in authors_norm if n)
+        generic_only = bool(authors_norm) and all(n in self._GENERIC_AUTHORS for n in authors_norm)
+        multi_contributor = len(authors_norm) >= 3
+        return credited or generic_only or multi_contributor
+
+    def _title_match(self, queried: str, candidate: str) -> bool:
+        """Exact normalised match, or token-prefix where the shorter title is
+        a prefix of the longer (with at least 2 tokens, to keep 'The Dark'
+        from token-prefix-matching 'The Dark Tower')."""
+        q = _norm_title_for_match(queried)
+        c = _norm_title_for_match(candidate)
+        if not q or not c:
+            return False
+        if q == c:
+            return True
+        qt, ct = q.split(), c.split()
+        short, long = (qt, ct) if len(qt) <= len(ct) else (ct, qt)
+        if len(short) < 2:
+            return False
+        return long[:len(short)] == short
+
+    def _extract_isbns(self, entry) -> set:
+        """Pull ISBNs from an OPDS entry's Dublin Core identifiers. Handles
+        urn:isbn:... and bare-numeric forms across the dcterms and dc
+        namespaces (CW emits dcterms; some servers use dc)."""
+        out: set = set()
+        for ns in (self.DCTERMS_NS, self.DC_NS):
+            for el in entry.findall(f"{ns}identifier"):
+                text = (el.text or "").strip()
+                if not text:
+                    continue
+                if text.lower().startswith("urn:isbn:"):
+                    text = text[9:]
+                canon = self._canon_isbn(text)
+                if canon:
+                    out.add(canon)
+        return out
+
+    @staticmethod
+    def _canon_isbn(s: str) -> str:
+        """Normalise an ISBN-ish string to dashless uppercase. Returns '' if
+        the input doesn't look like a 10- or 13-digit ISBN."""
+        if not s:
+            return ""
+        clean = re.sub(r"[\s\-]", "", s).upper()
+        if re.fullmatch(r"\d{13}", clean):
+            return clean
+        if re.fullmatch(r"\d{9}[\dX]", clean):
+            return clean
+        return ""
 
     async def _resolve_search_template(self) -> Optional[str]:
         """Find a templated search URL containing {searchTerms}.
@@ -564,43 +662,6 @@ class OpdsClient:
                         return self._search_template
 
         self.log("OPDS: no search link advertised on root catalog.")
-        return None
-
-    def _parse_feed(self, xml: str, author_norm: str, out: set) -> Optional[str]:
-        """Parse one Atom page; add normalised matching titles to `out`,
-        return the href of <link rel="next"> if present."""
-        try:
-            root = ET.fromstring(xml)
-        except ET.ParseError as e:
-            self.log(f"OPDS feed parse error: {e}")
-            return None
-        for entry in root.findall(f"{self.ATOM_NS}entry"):
-            title_el = entry.find(f"{self.ATOM_NS}title")
-            if title_el is None or not (title_el.text or "").strip():
-                continue
-            authors_norm = []
-            for a in entry.findall(f"{self.ATOM_NS}author"):
-                n = a.find(f"{self.ATOM_NS}name")
-                if n is not None and n.text:
-                    authors_norm.append(normalize_text(n.text))
-            # Only count entries that actually credit the queried author —
-            # OPDS search is typically a multi-field fuzzy match, so a search
-            # for "Stephen King" returns entries that merely mention King in
-            # the description too. Two carve-outs for anthology editors who
-            # often vanish from author fields on import:
-            #   - generic-placeholder ("Anthology", "Various"): trust the title.
-            #   - 3+ distinct contributors: a strong "compilation" signal where
-            #     the editor's name typically isn't listed at all.
-            credited = any(author_norm == n or author_norm in n or n in author_norm
-                           for n in authors_norm if n)
-            generic_only = bool(authors_norm) and all(n in self._GENERIC_AUTHORS for n in authors_norm)
-            multi_contributor = len(authors_norm) >= 3
-            if not credited and not generic_only and not multi_contributor:
-                continue
-            out.add(_norm_title_for_match(title_el.text))
-        for link in root.findall(f"{self.ATOM_NS}link"):
-            if link.get("rel") == "next" and link.get("href"):
-                return link.get("href")
         return None
 
 
@@ -1147,12 +1208,13 @@ class MetadataFetcher:
 
     async def get_author_books(self, author_id: str, author_name: str = "",
                                 query: Optional[str] = None, mode: str = "strict",
-                                owned_titles: Optional[set] = None) -> List[Dict]:
+                                opds: Optional["OpdsClient"] = None) -> List[Dict]:
         """Return the author's bibliography. mode is forwarded to Wikidata.
 
-        owned_titles is an optional set of normalised titles already in the
-        user's library (sourced from an OPDS server). Each returned book gets
-        an `owned: bool` field; the UI annotates and optionally hides them.
+        When opds is configured, each book is checked individually against
+        the catalog (ISBN match preferred, title+author fallback) and tagged
+        with an `owned: bool` field. The UI annotates these and optionally
+        hides them.
         """
         books: List[Dict] = []
         if author_name:
@@ -1166,7 +1228,8 @@ class MetadataFetcher:
             books = [b for b in books if q in normalize_text(b["title"])]
 
         # Limited enrichment for the UI: try to get ISBNs for the first 25 books
-        # to help the downloader find high-quality mirrors.
+        # to help the downloader find high-quality mirrors AND to drive the
+        # OPDS owned-match's ISBN path.
         gb = GoogleBooksBibliography(self.client)
         enrichment_tasks = []
         for b in books[:25]:
@@ -1176,9 +1239,24 @@ class MetadataFetcher:
         if enrichment_tasks:
             await asyncio.gather(*enrichment_tasks)
 
-        owned = owned_titles or set()
-        for b in books:
-            b["owned"] = _norm_title_for_match(b.get("title", "")) in owned if owned else False
+        if opds and opds.configured() and books:
+            # Fan out per-book OPDS queries with bounded concurrency so a 65-book
+            # bibliography doesn't open 65 simultaneous sockets to the catalog.
+            sem = asyncio.Semaphore(10)
+
+            async def _check(b):
+                async with sem:
+                    try:
+                        return await opds.book_owned(author_name, b["title"], b.get("isbns") or [])
+                    except Exception:
+                        return False
+
+            owned_results = await asyncio.gather(*(_check(b) for b in books))
+            for b, is_owned in zip(books, owned_results):
+                b["owned"] = is_owned
+        else:
+            for b in books:
+                b["owned"] = False
 
         return sorted(books, key=lambda x: (x.get("year") or 9999, x.get("title", "")))
 

@@ -204,9 +204,8 @@ async def author_books(author_id: str, author_name: str, query: str = None,
         lambda m: print(f"[opds] {m}", file=sys.stderr, flush=True),
     )
     try:
-        owned = await opds.owned_titles(author_name) if opds.configured() else set()
         books = await fetcher.get_author_books(author_id, author_name, query, mode=mode,
-                                                owned_titles=owned)
+                                                opds=opds)
         return {"author": author_name, "books": books, "opds_enabled": opds.configured()}
     finally:
         await fetcher.aclose()

@@ -43,11 +43,16 @@ if you're on a private tracker.
         indexer-priority. NZBs route to SABnzbd; torrents / magnets
         route to qBittorrent.
      3. **Anna's Archive / Libgen mirrors** (opt-in, see below).
-4. **Metadata enrichment.** When the downloaded file is an EPUB,
-   title / author / year / ISBN / language / cover (from OpenLibrary's
-   covers API) get embedded before it lands in the watch folder, so
-   CWA's auto-import has clean data. MOBI / AZW3 / PDF are saved
-   as-is — whatever metadata the source carried is what CWA sees.
+4. **ISBN anchor for CWA.** When the downloaded file is an EPUB,
+   the ISBN (sourced from Wikidata / Google Books) is planted as a
+   `<dc:identifier>` before the file lands in the watch folder. That's
+   the hard signal CWA's metadata fetch needs to resolve to the right
+   book — without it, fuzzy title matching can drift onto the wrong
+   record (the famous "Assassin's Blade" → "Assassin's Creed: Blade
+   of Shao Jun" near miss). Title / author / cover / etc. are left
+   to CWA's enrichment, which is broader-sourced (Google Books +
+   OpenLibrary + Goodreads + ISBN-DB) than ours. MOBI / AZW3 / PDF
+   are saved as-is.
 5. **Seed-friendly torrent handling.** qBit saves into `/app/torrents`
    (a separate volume from the library). On completion Library Dog
    *hardlinks* the book up to `/app/downloads` for CWA to ingest;
@@ -156,12 +161,17 @@ Three modes, all derived from env. They can be combined:
 
 ## Calibre-Web-Automated integration
 
-Library Dog's value-add for CWA is that **EPUBs** land *already
-metadata-tagged*. CWA's auto-import takes whatever's in the file,
-so we make sure title / author / year / ISBN / language / cover are
-all set from authoritative sources (Wikidata, OpenLibrary, Google
-Books) before the file shows up. MOBI / AZW3 / PDF are passed
-through unmodified — what the source carried is what CWA sees.
+Library Dog plants the ISBN as a `<dc:identifier>` in each EPUB it
+fetches. **Leave CWA's auto-metadata-fetch ON** — its enrichment is
+broader than ours, and the ISBN we plant anchors its lookup onto the
+correct book. Without that anchor, fuzzy title matching drifts onto
+unrelated records (e.g. matching "The Assassin's Blade" to "Assassin's
+Creed: Blade of Shao Jun"). MOBI / AZW3 / PDF are passed through
+unmodified — what the source carried is what CWA sees.
+
+The "needs review" tag (`Library Dog: needs review`) still lands on
+EPUBs sourced from Anna's Archive / Libgen / IPFS so you can audit them
+in Calibre Desktop with `tags:"Library Dog: needs review"`.
 
 Setup:
 
@@ -324,8 +334,9 @@ this.
 - `verify=False` on outbound HTTPS for the indexer/SAB/qBit clients
   (legacy from running against self-signed Prowlarr behind a
   reverse proxy). To be made env-configurable.
-- Metadata enrichment is EPUB-only. MOBI / AZW3 / PDF are saved
-  with whatever the source carried.
+- ISBN anchor is EPUB-only. MOBI / AZW3 / PDF are saved with
+  whatever the source carried — CWA's metadata fetch handles those
+  formats on its own.
 - Project Gutenberg only fetches EPUB (it's all Gutenberg ships in
   practice anyway). Anna's / Libgen mirrors honour your full format
   priority list.

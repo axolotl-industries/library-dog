@@ -268,6 +268,17 @@
         :root[data-theme="386"] .title-letter:nth-child(10) { color: #ffff55; } /* o */
         :root[data-theme="386"] .title-letter:nth-child(11) { color: #ffffff; } /* g */
 
+        /* Era-appropriate graphical titles for 95 / XP themes. Hidden by default,
+           shown when the matching theme is active and the screen has horizontal
+           room for them. Plain text wins on phones. */
+        .title-95, .title-xp { display: none; }
+        @media (min-width: 720px) {
+            :root[data-theme="95"] .title-text   { display: none; }
+            :root[data-theme="95"] .title-95     { display: inline-block; vertical-align: middle; }
+            :root[data-theme="xp"] .title-text   { display: none; }
+            :root[data-theme="xp"] .title-xp     { display: inline-block; vertical-align: middle; }
+        }
+
         .header-controls { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: normal; }
 
         /* Ko-fi heart link. SVG inherits color via fill=currentColor, so it
@@ -718,6 +729,56 @@
 <body>
     <h1>
         <span class="title-text">Library Dog</span>
+<svg class="title-95" viewBox="0 0 270 40" width="270" height="40" xmlns="http://www.w3.org/2000/svg" aria-label="Library Dog 95">
+    <!-- beveled gray panel -->
+    <rect x="1" y="1" width="268" height="38" fill="#c0c0c0"/>
+    <path d="M0 0 H270 V1 H1 V40 H0 Z" fill="#ffffff"/>
+    <path d="M270 0 V40 H0 V39 H269 V0 Z" fill="#404040"/>
+    <path d="M1 1 H269 V2 H2 V39 H1 Z" fill="#dfdfdf"/>
+    <path d="M269 1 V39 H1 V38 H268 V1 Z" fill="#808080"/>
+    <!-- four-square wave flag (Win95 colours, slight tilt for the 'flag' look) -->
+    <polygon points="10,9 22,7 22,21 10,22" fill="#ED1C24"/>
+    <polygon points="22,7  34,5 34,19 22,21" fill="#00A651"/>
+    <polygon points="10,22 22,21 22,33 10,34" fill="#0072BC"/>
+    <polygon points="22,21 34,19 34,31 22,33" fill="#FFC20E"/>
+    <!-- title text -->
+    <text x="44" y="27" font-family="'MS Sans Serif', 'Microsoft Sans Serif', Tahoma, sans-serif" font-size="20" font-weight="bold" fill="#000000">Library Dog</text>
+    <text x="225" y="27" font-family="'MS Sans Serif', 'Microsoft Sans Serif', Tahoma, sans-serif" font-size="20" font-weight="bold" fill="#000080">95</text>
+</svg>
+<svg class="title-xp" viewBox="0 0 270 40" width="270" height="40" xmlns="http://www.w3.org/2000/svg" aria-label="Library Dog XP">
+    <defs>
+        <linearGradient id="xpbar" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"  stop-color="#3a8be0"/>
+            <stop offset="50%" stop-color="#0058e6"/>
+            <stop offset="100%" stop-color="#003c80"/>
+        </linearGradient>
+        <linearGradient id="xpRed" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#ff7676"/><stop offset="100%" stop-color="#cc0000"/>
+        </linearGradient>
+        <linearGradient id="xpGrn" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#7ce47c"/><stop offset="100%" stop-color="#1a8c1a"/>
+        </linearGradient>
+        <linearGradient id="xpBlu" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#5ea6f0"/><stop offset="100%" stop-color="#003ca0"/>
+        </linearGradient>
+        <linearGradient id="xpYel" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#fff066"/><stop offset="100%" stop-color="#cc9900"/>
+        </linearGradient>
+    </defs>
+    <!-- glossy blue rounded title bar -->
+    <rect x="0" y="2" width="270" height="36" rx="8" ry="8" fill="url(#xpbar)" stroke="#003c80" stroke-width="1"/>
+    <!-- highlight stripe across top, gives the 'glossy' Luna feel -->
+    <rect x="2" y="4" width="266" height="14" rx="6" ry="6" fill="#ffffff" opacity="0.18"/>
+    <!-- four-square wave flag with gradient gloss -->
+    <polygon points="10,10 22,7  22,21 10,22" fill="url(#xpRed)"/>
+    <polygon points="22,7  34,4  34,19 22,21" fill="url(#xpGrn)"/>
+    <polygon points="10,22 22,21 22,33 10,35" fill="url(#xpBlu)"/>
+    <polygon points="22,21 34,19 34,31 22,33" fill="url(#xpYel)"/>
+    <!-- title text in Tahoma white with subtle shadow -->
+    <text x="44" y="26" font-family="Tahoma, 'Lucida Sans Unicode', sans-serif" font-size="18" font-weight="bold" fill="#001a44" opacity="0.6">Library Dog</text>
+    <text x="44" y="25" font-family="Tahoma, 'Lucida Sans Unicode', sans-serif" font-size="18" font-weight="bold" fill="#ffffff">Library Dog</text>
+    <text x="225" y="25" font-family="Tahoma, 'Lucida Sans Unicode', sans-serif" font-size="18" font-weight="bold" fill="#ffffff">XP</text>
+</svg>
 <div class="title-ascii"><span class="title-letter"> _____
 |     |_
 |       |

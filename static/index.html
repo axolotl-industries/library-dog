@@ -280,6 +280,7 @@
         }
 
         .header-controls { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: normal; }
+        .app-version { font-size: 11px; opacity: 0.6; letter-spacing: 0.5px; user-select: none; }
 
         /* Ko-fi heart link. SVG inherits color via fill=currentColor, so it
            tracks the active theme's --primary. Fixed-width hit target. */
@@ -827,6 +828,7 @@
 |___  |
 |_____|</span></div>
         <span class="header-controls">
+            <span class="app-version" title="Library Dog version">v<!-- VERSION --></span>
             <a class="kofi-heart" href="https://ko-fi.com/axolotlindustries" target="_blank" rel="noopener" title="Support on Ko-fi" aria-label="Support on Ko-fi">
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
@@ -1244,7 +1246,7 @@
             const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
             // Build a "select all" checkbox state matching the rows that will actually be rendered:
             // checked iff every visible row would be checked (i.e. nothing is owned, or hide=on).
-            let h = `<table><tr><th class="chk-col"><input type="checkbox" checked onclick="toggleAll(this)"></th><th>Year</th><th>Title</th></tr>`;
+            let h = `<table><tr><th class="chk-col" title="Toggle all"><label style="display:block; cursor:pointer;" aria-label="Select all"><input type="checkbox" checked onclick="toggleAll(this)"></label></th><th>Year</th><th>Title</th></tr>`;
             currentBooks.forEach((b, i) => {
                 if (b.owned && hide) return;
                 const ownedBadge = b.owned ? ' <span class="kind-badge owned">In Library</span>' : '';

@@ -21,6 +21,21 @@ from core import (
 app = FastAPI()
 
 
+# --- App version ---
+# Read once at import time. Bumped manually in the VERSION file alongside each
+# release tag (CI builds the matching :v* image; the file value is what shows
+# in the UI). Falls back to "dev" if the file is missing — e.g. running from a
+# checkout where someone deleted it.
+def _read_version() -> str:
+    try:
+        return Path(__file__).resolve().parent.joinpath("VERSION").read_text().strip() or "dev"
+    except OSError:
+        return "dev"
+
+
+APP_VERSION = _read_version()
+
+
 # --- Session middleware ---
 
 SESSION_SECRET = os.getenv("SESSION_SECRET") or secrets.token_urlsafe(32)
@@ -157,7 +172,8 @@ async def index(request: Request):
         return RedirectResponse("/login", status_code=303)
     # else: existing session OR fully open (no AUTH_PASSWORD, no TRUSTED_PROXY_AUTH).
     with open("static/index.html") as f:
-        return HTMLResponse(f.read(), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+        body = f.read().replace("<!-- VERSION -->", htmllib.escape(APP_VERSION))
+    return HTMLResponse(body, headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 @app.get("/whoami")

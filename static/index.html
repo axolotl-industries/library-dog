@@ -1012,6 +1012,18 @@
         // blocking anything else.
         loadIndexers();
 
+        // Anna's Archive rotates domains; ask the backend which one is live so
+        // the failure-panel links land somewhere that resolves. Falls back to
+        // .org if the lookup fails entirely.
+        let _annasDomain = "https://annas-archive.org";
+        (async function loadAnnasDomain() {
+            try {
+                const res = await apiFetch('/annas-domain');
+                const data = await res.json();
+                if (data.domain) _annasDomain = data.domain;
+            } catch (_) {}
+        })();
+
         function fmtSize(n) {
             if (!n) return '—';
             if (n < 1024) return n + ' B';
@@ -1267,7 +1279,7 @@
             const author = encodeURIComponent(s.author);
             const rows = s.failedTitles.map(title => {
                 const t = encodeURIComponent(title);
-                const annas    = `https://annas-archive.org/search?q=${author}+${t}`;
+                const annas    = `${_annasDomain}/search?q=${author}+${t}`;
                 const libgen   = `https://libgen.li/index.php?req=${author}+${t}&res=25&filesuns=all`;
                 const bookshop = `https://bookshop.org/search?keywords=${author}+${t}`;
                 return `<tr>

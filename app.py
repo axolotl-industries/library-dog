@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from core import (
     MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient,
     GutenbergClient, flatten_downloads, hardlink_books_to_root, has_playwright,
+    resolve_annas_domain,
 )
 
 app = FastAPI()
@@ -185,6 +186,24 @@ async def author_books(author_id: str, author_name: str, query: str = None,
         return {"author": author_name, "books": books}
     finally:
         await fetcher.aclose()
+
+
+# Anna's Archive rotates its public domain (.gl / .se / .li / .gs / .org) when
+# any one gets DNS'd. The resolver in core.py probes them; we cache the result
+# for an hour so the failure-panel "manual search" links always point at a
+# domain that's actually responding right now, without hammering Anna's on
+# every page load.
+_ANNAS_CACHE = {"domain": None, "fetched_at": 0.0}
+_ANNAS_CACHE_TTL = 3600  # seconds
+
+
+@app.get("/annas-domain")
+async def annas_domain(u: str = Depends(current_user)):
+    now = time.time()
+    if not _ANNAS_CACHE["domain"] or now - _ANNAS_CACHE["fetched_at"] > _ANNAS_CACHE_TTL:
+        _ANNAS_CACHE["domain"] = await resolve_annas_domain(lambda _: None)
+        _ANNAS_CACHE["fetched_at"] = now
+    return {"domain": _ANNAS_CACHE["domain"]}
 
 
 @app.get("/indexers")

@@ -242,12 +242,31 @@
             letter-spacing: 0;
             text-transform: none;
             color: var(--primary);
+        }
+        .title-letter {
+            display: inline-block;
             white-space: pre;
+            vertical-align: top;
+            color: inherit;
         }
         @media (min-width: 720px) {
             :root[data-chrome="bbs"] .title-text { display: none; }
-            :root[data-chrome="bbs"] .title-ascii { display: block; }
+            :root[data-chrome="bbs"] .title-ascii { display: inline-block; }
         }
+        /* 386 only: every letter in the figlet rendered in a different ANSI hue.
+           AT and XT keep the single-colour figlet because their whole point is
+           the monochrome phosphor look. */
+        :root[data-theme="386"] .title-letter:nth-child(1)  { color: #55ffff; } /* L */
+        :root[data-theme="386"] .title-letter:nth-child(2)  { color: #ffff55; } /* i */
+        :root[data-theme="386"] .title-letter:nth-child(3)  { color: #55ff55; } /* b */
+        :root[data-theme="386"] .title-letter:nth-child(4)  { color: #ff55ff; } /* r */
+        :root[data-theme="386"] .title-letter:nth-child(5)  { color: #ff5555; } /* a */
+        :root[data-theme="386"] .title-letter:nth-child(6)  { color: #55ffff; } /* r */
+        :root[data-theme="386"] .title-letter:nth-child(7)  { color: #55ff55; } /* y */
+        /* nth-child(8) is the inter-word gap — leave uncoloured */
+        :root[data-theme="386"] .title-letter:nth-child(9)  { color: #ff55ff; } /* D */
+        :root[data-theme="386"] .title-letter:nth-child(10) { color: #ffff55; } /* o */
+        :root[data-theme="386"] .title-letter:nth-child(11) { color: #ffffff; } /* g */
 
         .header-controls { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: normal; }
 
@@ -699,11 +718,51 @@
 <body>
     <h1>
         <span class="title-text">Library Dog</span>
-<pre class="title-ascii"> _____   __ __                            _____
-|     |_|__|  |--.----.---.-.----.--.--. |     \.-----.-----.
-|       |  |  _  |   _|  _  |   _|  |  | |  --  |  _  |  _  |
-|_______|__|_____|__| |___._|__| |___  | |_____/|_____|___  |
-                                 |_____|              |_____|</pre>
+<div class="title-ascii"><span class="title-letter"> _____
+|     |_
+|       |
+|_______|
+         </span><span class="title-letter"> __
+|__|
+|  |
+|__|
+    </span><span class="title-letter"> __
+|  |--.
+|  _  |
+|_____|
+       </span><span class="title-letter">
+.----.
+|   _|
+|__|
+      </span><span class="title-letter">
+.---.-.
+|  _  |
+|___._|
+       </span><span class="title-letter">
+.----.
+|   _|
+|__|
+      </span><span class="title-letter">
+.--.--.
+|  |  |
+|___  |
+|_____|</span><span class="title-letter">
+
+
+
+    </span><span class="title-letter"> _____
+|     \
+|  --  |
+|_____/
+        </span><span class="title-letter">
+.-----.
+|  _  |
+|_____|
+       </span><span class="title-letter">
+.-----.
+|  _  |
+|___  |
+|_____|</span></div>
         <span class="header-controls">
             <a class="kofi-heart" href="https://ko-fi.com/axolotlindustries" target="_blank" rel="noopener" title="Support on Ko-fi" aria-label="Support on Ko-fi">
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

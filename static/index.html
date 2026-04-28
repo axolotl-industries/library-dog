@@ -1236,7 +1236,6 @@
 
                 currentAuthor = data.author; currentBooks = data.books;
                 opdsEnabled = !!data.opds_enabled;
-                document.getElementById('author-title').innerText = `${data.books.length} book${data.books.length !== 1 ? 's' : ''} for ${data.author}`;
                 document.getElementById('results-card').style.display = 'block';
 
                 const wrap = document.getElementById('library-toggle-wrap');
@@ -1252,8 +1251,8 @@
         function renderResults() {
             const hide = getHideOwned();
             const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-            // Build a "select all" checkbox state matching the rows that will actually be rendered:
-            // checked iff every visible row would be checked (i.e. nothing is owned, or hide=on).
+            const visible = currentBooks.filter(b => !(b.owned && hide));
+            document.getElementById('author-title').innerText = `${visible.length} book${visible.length !== 1 ? 's' : ''} for ${currentAuthor}`;
             let h = `<table><tr><th class="chk-col" title="Toggle all"><label style="display:block; cursor:pointer;" aria-label="Select all"><input type="checkbox" checked onclick="toggleAll(this)"></label></th><th>Year</th><th>Title</th></tr>`;
             currentBooks.forEach((b, i) => {
                 if (b.owned && hide) return;

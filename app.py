@@ -330,9 +330,17 @@ if ENABLE_GREY_SOURCES and not has_playwright():
     ENABLE_GREY_SOURCES = False
 
 
-def _library_epubs() -> set:
+_BOOK_GLOBS = ("*.epub", "*.mobi", "*.azw3", "*.pdf")
+
+
+def _library_books() -> set:
     base = Path(DOWNLOAD_DIR)
-    return {p.name for p in base.glob('*.epub')} if base.is_dir() else set()
+    if not base.is_dir():
+        return set()
+    out: set = set()
+    for pat in _BOOK_GLOBS:
+        out.update(p.name for p in base.glob(pat))
+    return out
 
 
 async def run_background_download(job_id, data):
@@ -359,7 +367,7 @@ async def run_background_download(job_id, data):
     try:
         for b in data['books']:
             log(f"Searching for '{b['title']}'...")
-            before = _library_epubs()
+            before = _library_books()
 
             # 0. Project Gutenberg — public domain books come straight from the source;
             #    if found, skip Usenet and mirrors entirely.
@@ -369,7 +377,7 @@ async def run_background_download(job_id, data):
 
             # 1. Indexers (Prowlarr aggregated) — route NZB→SAB, torrent→qBit.
             #    If the user pre-selected a specific candidate from /candidates, use it directly.
-            if not (_library_epubs() - before):
+            if not (_library_books() - before):
                 if prowlarr.configured():
                     if b.get('nzb_url'):
                         candidates = [{'link': b['nzb_url'], 'kind': b.get('kind', 'nzb')}]
@@ -414,19 +422,20 @@ async def run_background_download(job_id, data):
                                 hardlink_books_to_root(TORRENT_DIR, DOWNLOAD_DIR, log)
                             elif final_status == "failed":
                                 await qbit.delete(job, delete_files=True)
-                        if _library_epubs() - before:
+                        if _library_books() - before:
                             break
 
             # 2. Mirrors (Anna's Archive / Libgen) — opt-in via ENABLE_GREY_SOURCES.
-            if scraper and not (_library_epubs() - before):
-                mirrors = await scraper.get_mirrors(data['author'], b['title'], b['isbns'])
-                for name, url in mirrors:
-                    if await downloader.download(name, url, data['author'], b['title'], b):
+            if scraper and not (_library_books() - before):
+                mirrors = await scraper.get_mirrors(data['author'], b['title'], b['isbns'],
+                                                     formats=formats)
+                for name, url, fmt in mirrors:
+                    if await downloader.download(name, url, data['author'], b['title'], b, fmt=fmt):
                         break
 
             # Check if the specific book we wanted (or at least something new) exists
             safe_t = re.sub(r'[\\/*?:"<>|]', "", b['title']).lower()
-            current_files = _library_epubs()
+            current_files = _library_books()
             new_files = current_files - before
             
             success = False

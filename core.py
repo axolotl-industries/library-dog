@@ -808,6 +808,17 @@ class QbitClient:
 
 import random
 
+# Bare role-nouns Wikidata sometimes returns as a "title" when an editor /
+# translator credit is mis-typed as a literary work. These are never real
+# book titles, so filter them out at the SPARQL-result layer rather than
+# letting them surface in the picker as ungrabbable entries.
+_JUNK_TITLES = {
+    "edited by", "introduction", "preface", "foreword", "afterword",
+    "translation", "translated by", "translator", "untitled",
+    "selected works", "various", "anonymous",
+}
+
+
 class WikidataBibliography:
     """Uses Wikidata's SPARQL endpoint to get a canonical list of an author's works.
     This is highly authoritative and avoids the 'garbage' found in catch-all databases.
@@ -928,6 +939,14 @@ class WikidataBibliography:
                 if not title or re.match(r"^Q\d+$", title):
                     continue
 
+                norm = normalize_text(title)
+                # Drop bare role-nouns and absurdly short titles. Wikidata sometimes
+                # surfaces "Edited by" / "Introduction" / single-letter labels when an
+                # editor or contributor credit is mis-typed as a literary work; these
+                # never resolve to real downloads.
+                if norm in _JUNK_TITLES or len(norm) < 3:
+                    continue
+
                 year_str = b.get("date", {}).get("value", "")
                 year = int(year_str[:4]) if re.match(r"^\d{4}", year_str) else None
                 isbn = b.get("isbn", {}).get("value", "").replace("-", "").strip() or None
@@ -938,7 +957,6 @@ class WikidataBibliography:
                 if mode == "permissive" and not year and not isbn:
                     continue
 
-                norm = normalize_text(title)
                 existing = books.get(norm)
                 if not existing:
                     books[norm] = {"title": title, "year": year, "isbns": [isbn] if isbn else []}
@@ -1219,8 +1237,31 @@ class ScraperEngine:
         except Exception: pass
         return None
 
-    async def get_mirrors(self, author: str, title: str, isbns: List[str]) -> List[Tuple[str, str]]:
-        mirrors = []
+    async def get_mirrors(self, author: str, title: str, isbns: List[str],
+                          formats: Optional[List[str]] = None) -> List[Tuple[str, str, str]]:
+        """Find downloadable mirrors for (author, title) across Libgen + Anna's.
+
+        Returns (mirror_name, direct_url, format) tuples, in order of attempt
+        priority. The format propagates to the Downloader so PDF mirrors land
+        with a `.pdf` extension and skip EPUB-specific validation.
+
+        Search strategy:
+          - Outer loop: user's enabled formats in priority order. Falls back to
+            ['epub'] when the user expressed no preference (preserves prior
+            behaviour).
+          - Inner loop: queries in fallback order:
+              ISBN (when known)              — most precise.
+              "<author> <title>"             — narrows generic-titled
+                                                anthologies ("The Dark",
+                                                "Echoes") that drown in the
+                                                catalog otherwise.
+              "<author> <title-pre-colon>"   — only when there's a colon;
+                                                handles entries whose mirror
+                                                listing doesn't carry the
+                                                subtitle.
+        """
+        formats = list(formats) if formats else ["epub"]
+        mirrors: List[Tuple[str, str, str]] = []
         page = await self.browser.new_page()
         norm_title_full = normalize_text(title.replace(':', ' '))
         norm_title = normalize_text(title)
@@ -1230,46 +1271,64 @@ class ScraperEngine:
             n = normalize_text(s)
             return norm_title_full in n or norm_title in n
 
-        queries = [isbns[0]] if isbns else []
-        queries.append(_query_title(title))
-        try:
-            for q in queries:
-                self.log(f"Checking mirrors for '{title}'...")
-                try:
-                    await page.goto(f"https://libgen.li/index.php?req={quote(q)}&res=25&filesuns=all", timeout=30000)
-                    soup = BeautifulSoup(await page.content(), 'html.parser')
-                    rows = soup.select('table[id="table-libgen"] tr') or soup.find_all('tr')[1:]
-                    for r in rows:
-                        cols = r.find_all('td')
-                        if len(cols) < 8: continue
-                        raw_t, raw_a, raw_l, raw_e = cols[0].get_text(strip=True).lower(), cols[1].get_text(strip=True).lower(), cols[4].get_text(strip=True).lower(), cols[7].get_text(strip=True).lower()
-                        if 'epub' in raw_e and (any(l in raw_l for l in ['english', 'eng']) or not raw_l.strip()) and _title_match(raw_t) and (any(p in raw_a for p in author_parts) if author_parts else True):
-                            ads = cols[-1].find('a', href=re.compile(r"ads\.php"))
-                            if ads:
-                                direct = await self._resolve_mirror(urljoin("https://libgen.li", ads['href']), page)
-                                if direct: self.log(f"Found mirror match..."); mirrors.append(("Libgen", direct)); break
-                    if mirrors: break
-                except asyncio.CancelledError: raise
-                except: pass
+        author_q = normalize_text(author)
+        title_q = _query_title(title)
+        queries: List[str] = []
+        if isbns:
+            queries.append(isbns[0])
+        queries.append(f"{author_q} {title_q}".strip() if author_q else title_q)
+        if ":" in title:
+            short = title.split(":")[0].strip()
+            short_q = _query_title(short)
+            if short_q and short_q != title_q:
+                queries.append(f"{author_q} {short_q}".strip() if author_q else short_q)
 
-                try:
-                    await page.goto(f"{self.annas_base}/search?q={quote(q)}&ext=epub&lang=en", timeout=30000)
-                    results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
-                    for cand in results[:3]:
-                        cand_t = normalize_text(cand.get_text())
-                        if _title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True):
-                            await page.goto(urljoin(self.annas_base, cand['href']), timeout=30000)
-                            msoup = BeautifulSoup(await page.content(), 'html.parser')
-                            lg = msoup.find('a', href=re.compile(r"libgen\.li/ads\.php"))
-                            if lg:
-                                direct = await self._resolve_mirror(lg['href'], page)
-                                if direct: self.log(f"Found mirror match..."); mirrors.append(("Anna Libgen", direct))
-                            ipfs = msoup.find('a', href=re.compile(r"ipfs"))
-                            if ipfs and 'ipfs://' in ipfs['href']: mirrors.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}"))
-                            if len(mirrors) >= 3: break
-                    if mirrors: break
-                except asyncio.CancelledError: raise
-                except: pass
+        try:
+            for fmt in formats:
+                for q in queries:
+                    self.log(f"Mirror search '{title}' [{fmt}]: {q}")
+                    try:
+                        await page.goto(f"https://libgen.li/index.php?req={quote(q)}&res=25&filesuns=all", timeout=30000)
+                        soup = BeautifulSoup(await page.content(), 'html.parser')
+                        rows = soup.select('table[id="table-libgen"] tr') or soup.find_all('tr')[1:]
+                        for r in rows:
+                            cols = r.find_all('td')
+                            if len(cols) < 8: continue
+                            raw_t, raw_a, raw_l, raw_e = cols[0].get_text(strip=True).lower(), cols[1].get_text(strip=True).lower(), cols[4].get_text(strip=True).lower(), cols[7].get_text(strip=True).lower()
+                            if fmt in raw_e and (any(l in raw_l for l in ['english', 'eng']) or not raw_l.strip()) and _title_match(raw_t) and (any(p in raw_a for p in author_parts) if author_parts else True):
+                                ads = cols[-1].find('a', href=re.compile(r"ads\.php"))
+                                if ads:
+                                    direct = await self._resolve_mirror(urljoin("https://libgen.li", ads['href']), page)
+                                    if direct:
+                                        self.log(f"Found Libgen mirror ({fmt}).")
+                                        mirrors.append(("Libgen", direct, fmt))
+                                        break
+                        if mirrors: break
+                    except asyncio.CancelledError: raise
+                    except: pass
+
+                    try:
+                        await page.goto(f"{self.annas_base}/search?q={quote(q)}&ext={fmt}&lang=en", timeout=30000)
+                        results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
+                        for cand in results[:10]:
+                            cand_t = normalize_text(cand.get_text())
+                            if _title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True):
+                                await page.goto(urljoin(self.annas_base, cand['href']), timeout=30000)
+                                msoup = BeautifulSoup(await page.content(), 'html.parser')
+                                lg = msoup.find('a', href=re.compile(r"libgen\.li/ads\.php"))
+                                if lg:
+                                    direct = await self._resolve_mirror(lg['href'], page)
+                                    if direct:
+                                        self.log(f"Found Anna's→Libgen mirror ({fmt}).")
+                                        mirrors.append(("Anna Libgen", direct, fmt))
+                                ipfs = msoup.find('a', href=re.compile(r"ipfs"))
+                                if ipfs and 'ipfs://' in ipfs['href']:
+                                    mirrors.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt))
+                                if len(mirrors) >= 3: break
+                        if mirrors: break
+                    except asyncio.CancelledError: raise
+                    except: pass
+                if mirrors: break
         finally: await page.close()
         return mirrors
 
@@ -1323,9 +1382,20 @@ class Downloader:
         self.ssl_ctx = create_robust_ssl_context()
         os.makedirs(self.base_dir, exist_ok=True)
 
-    async def download(self, mirror: str, url: str, author: str, title: str, book_data: Dict) -> bool:
+    async def download(self, mirror: str, url: str, author: str, title: str,
+                       book_data: Dict, fmt: str = "epub") -> bool:
+        """Stream a book from `url` into the watch folder.
+
+        EPUBs are validated structurally (zip + mimetype entry) and metadata-
+        enriched; other formats land as-is and are validated only by the
+        size sanity check, since we can't safely embed metadata into PDF/MOBI/
+        AZW3 with the same library. Tagging-for-review on grey sources is
+        preserved for EPUB only — non-EPUB grey downloads still get the
+        "needs review" treatment via the bibliography UX, just not the
+        in-file tag.
+        """
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
-        path = os.path.join(self.base_dir, f"{safe_title}.epub")
+        path = os.path.join(self.base_dir, f"{safe_title}.{fmt}")
         for cfg in [{"verify": self.ssl_ctx}, {"verify": False}]:
             try:
                 async with httpx.AsyncClient(follow_redirects=True, timeout=60.0, headers={"User-Agent": UA}, **cfg) as client:
@@ -1337,12 +1407,17 @@ class Downloader:
                         with open(path, "wb") as f:
                             async for chunk in resp.aiter_bytes(): f.write(chunk)
                             f.flush(); os.fsync(f.fileno())
-                if zipfile.is_zipfile(path):
-                    with zipfile.ZipFile(path) as z:
-                        if 'mimetype' in z.namelist():
-                            await self._enrich_epub(path, author, title, book_data, source=mirror)
-                            self.log(f"Saved to: {path}"); return True
-                if os.path.exists(path): os.remove(path)
+                if fmt == "epub":
+                    if zipfile.is_zipfile(path):
+                        with zipfile.ZipFile(path) as z:
+                            if 'mimetype' in z.namelist():
+                                await self._enrich_epub(path, author, title, book_data, source=mirror)
+                                self.log(f"Saved to: {path}"); return True
+                    if os.path.exists(path): os.remove(path)
+                else:
+                    if os.path.exists(path) and os.path.getsize(path) > 10000:
+                        self.log(f"Saved to: {path}"); return True
+                    if os.path.exists(path): os.remove(path)
             except asyncio.CancelledError: raise
             except Exception:
                 if os.path.exists(path): os.remove(path)

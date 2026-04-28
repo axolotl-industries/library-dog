@@ -307,8 +307,9 @@ this.
   reverse proxy). To be made env-configurable.
 - Metadata enrichment is EPUB-only. MOBI / AZW3 / PDF are saved
   with whatever the source carried.
-- Multi-format support reaches Prowlarr indexer results only —
-  Project Gutenberg + Anna's / Libgen mirrors still only fetch EPUB.
+- Project Gutenberg only fetches EPUB (it's all Gutenberg ships in
+  practice anyway). Anna's / Libgen mirrors honour your full format
+  priority list.
 - The `-grey` image carries Playwright + Chromium and is ~700MB,
   vs ~150MB for the standard image. There's no in-between today.
 

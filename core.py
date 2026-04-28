@@ -586,14 +586,16 @@ class OpdsClient:
             # Only count entries that actually credit the queried author —
             # OPDS search is typically a multi-field fuzzy match, so a search
             # for "Stephen King" returns entries that merely mention King in
-            # the description too. Entries credited only to a generic
-            # placeholder ("Anthology", "Various", ...) are accepted on the
-            # strength of the title alone, since anthology editors often
-            # land in libraries under those rather than their own name.
+            # the description too. Two carve-outs for anthology editors who
+            # often vanish from author fields on import:
+            #   - generic-placeholder ("Anthology", "Various"): trust the title.
+            #   - 3+ distinct contributors: a strong "compilation" signal where
+            #     the editor's name typically isn't listed at all.
             credited = any(author_norm == n or author_norm in n or n in author_norm
                            for n in authors_norm if n)
             generic_only = bool(authors_norm) and all(n in self._GENERIC_AUTHORS for n in authors_norm)
-            if not credited and not generic_only:
+            multi_contributor = len(authors_norm) >= 3
+            if not credited and not generic_only and not multi_contributor:
                 continue
             out.add(_norm_title_for_match(title_el.text))
         for link in root.findall(f"{self.ATOM_NS}link"):

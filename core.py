@@ -93,6 +93,16 @@ def normalize_text(text: str) -> str:
     return " ".join(t.split())
 
 
+def _norm_title_for_match(title: str) -> str:
+    """Title normaliser for cross-system owned-status matching (Library Dog
+    bibliography ↔ OPDS catalog). Replaces colons with spaces before handing
+    off to normalize_text, which would otherwise truncate at the first colon
+    and miss matches like "Foo: Bar Baz" vs "Foo Bar Baz" — a common shape
+    when one system carries the subtitle and the other doesn't.
+    """
+    return normalize_text((title or "").replace(":", " "))
+
+
 def _query_title(title: str) -> str:
     """Build an indexer/mirror search query from a book title.
 
@@ -573,7 +583,7 @@ class OpdsClient:
             if not any(author_norm == n or author_norm in n or n in author_norm
                        for n in authors_norm if n):
                 continue
-            out.add(normalize_text(title_el.text))
+            out.add(_norm_title_for_match(title_el.text))
         for link in root.findall(f"{self.ATOM_NS}link"):
             if link.get("rel") == "next" and link.get("href"):
                 return link.get("href")
@@ -1154,7 +1164,7 @@ class MetadataFetcher:
 
         owned = owned_titles or set()
         for b in books:
-            b["owned"] = normalize_text(b.get("title", "")) in owned if owned else False
+            b["owned"] = _norm_title_for_match(b.get("title", "")) in owned if owned else False
 
         return sorted(books, key=lambda x: (x.get("year") or 9999, x.get("title", "")))
 

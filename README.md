@@ -313,8 +313,11 @@ this.
 ## Known limitations / roadmap
 
 - Job state is in-memory; restart loses history.
-- Library-awareness via OPDS is title-match only — no ISBN cross-check.
-  Books with a renamed-on-import title in your library may not be detected.
+- OPDS owned-matching is best-effort: a book whose stored title diverges
+  significantly from its Wikidata title AND lacks a matching ISBN on
+  either side won't be detected. Anthology editors hit this most often
+  — the bibliography stays correct, the picker just won't know the book
+  is already owned.
 - No notifications (Apprise / Discord / etc.).
 - Single shared password; no multi-user accounts. Use forward-auth
   if you need real users.

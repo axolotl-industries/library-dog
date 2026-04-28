@@ -93,6 +93,14 @@ def normalize_text(text: str) -> str:
     return " ".join(t.split())
 
 
+def _title_punct_score(t: str) -> int:
+    """Count of non-alphanumeric / non-whitespace characters in `t`. Used
+    as a tiebreaker between Wikidata-returned title variants for the same
+    book — the variant retaining apostrophes / colons / hyphens is almost
+    always the canonical rendering."""
+    return sum(1 for c in (t or "") if not c.isalnum() and not c.isspace())
+
+
 def _norm_title_for_match(title: str) -> str:
     """Title normaliser for cross-system owned-status matching (Library Dog
     bibliography ↔ OPDS catalog). Replaces colons with spaces before handing
@@ -1046,6 +1054,14 @@ class WikidataBibliography:
                 if not existing:
                     books[norm] = {"title": title, "year": year, "isbns": [isbn] if isbn else []}
                 else:
+                    # When collapsing duplicates (same normalised title across
+                    # multiple Wikidata Q-items / editions), prefer the title
+                    # that carries more punctuation. Apostrophes / colons /
+                    # hyphens are commonly dropped by individual editors on
+                    # one variant, and the canonical rendering is what we
+                    # want to display, search, and link from the failure panel.
+                    if _title_punct_score(title) > _title_punct_score(existing["title"]):
+                        existing["title"] = title
                     if year and (existing["year"] is None or year < existing["year"]):
                         existing["year"] = year
                     if isbn and isbn not in existing["isbns"]:

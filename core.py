@@ -8,6 +8,7 @@ import zipfile
 import sys
 import shutil
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from typing import List, Dict, Optional, Tuple, Generator, Callable
@@ -386,6 +387,197 @@ class ProwlarrClient:
             idx_order.get(r.get("indexer_id", 0), len(idx_order)),
         ))
         return results
+
+
+class OpdsClient:
+    """Queries an OPDS catalog (Calibre-Web / Calibre-Web-Automated, Kavita,
+    Komga, Ubooquity, plain Calibre, ...) to find which books by a given
+    author are already in the library.
+
+    Auth is HTTP Basic when username/password are supplied; many servers
+    (notably Kavita) instead embed an API token in the URL path, in which
+    case username/password are left blank.
+
+    Search URL discovery follows the OPDS / OpenSearch convention:
+    we GET the root catalog, look for <link rel="search">, follow that to
+    the OpenSearch description doc if necessary, and substitute the author
+    name into the discovered URL template. Discovery happens once per
+    process; the resolved template is cached.
+    """
+
+    ATOM_NS = "{http://www.w3.org/2005/Atom}"
+    OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
+
+    def __init__(self, base_url: str, username: str, password: str, log_func: Callable = print):
+        self.base_url = (base_url or "").strip().rstrip('/')
+        self.username = (username or "").strip()
+        self.password = (password or "").strip()
+        self.log = log_func
+        self._search_template: Optional[str] = None  # cached after discovery
+
+    def configured(self) -> bool:
+        return bool(self.base_url)
+
+    def _auth(self):
+        return (self.username, self.password) if self.username else None
+
+    async def owned_titles(self, author: str) -> set:
+        """Return normalised titles by `author` already in the library.
+
+        Empty set on any failure or when not configured — callers treat that
+        as "no annotation" rather than blocking the bibliography fetch.
+        """
+        if not self.configured() or not author.strip():
+            return set()
+        try:
+            template = await self._resolve_search_template()
+            if not template:
+                return set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log(f"OPDS search discovery failed: {e}")
+            return set()
+
+        author_norm = normalize_text(author)
+        if not author_norm:
+            return set()
+
+        url = template.replace("{searchTerms}", quote(author))
+        seen: set = set()
+        try:
+            async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True,
+                                         headers={"User-Agent": UA,
+                                                  "Accept": "application/atom+xml"},
+                                         auth=self._auth()) as client:
+                pages = 0
+                # Cap pagination to keep a misbehaving server from hanging us.
+                # Five pages of typical OPDS page size (~25 entries) covers any
+                # realistic single-author shelf.
+                while url and pages < 5:
+                    r = await client.get(url)
+                    if r.status_code == 401:
+                        self.log("OPDS: 401 Unauthorized — check OPDS_USERNAME / OPDS_PASSWORD.")
+                        return set()
+                    if r.status_code != 200:
+                        self.log(f"OPDS search HTTP {r.status_code}: {r.text[:200]}")
+                        return set()
+                    next_href = self._parse_feed(r.text, author_norm, seen)
+                    url = urljoin(str(r.url), next_href) if next_href else None
+                    pages += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log(f"OPDS search error: {e}")
+            return set()
+        return seen
+
+    async def _resolve_search_template(self) -> Optional[str]:
+        """Find a templated search URL containing {searchTerms}.
+
+        Two paths a server may expose:
+          1. <link rel="search" type="application/atom+xml" href="...?q={searchTerms}">
+             — direct templated query against the OPDS feed.
+          2. <link rel="search" type="application/opensearchdescription+xml" href="...">
+             — points to an OpenSearch description doc whose <Url template="..."/>
+             carries the templated URL.
+
+        We try (1) first, fall back to (2). Result is cached in-instance.
+        """
+        if self._search_template:
+            return self._search_template
+
+        async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True,
+                                     headers={"User-Agent": UA,
+                                              "Accept": "application/atom+xml"},
+                                     auth=self._auth()) as client:
+            r = await client.get(self.base_url)
+            if r.status_code == 401:
+                self.log("OPDS: 401 Unauthorized on root catalog — check credentials.")
+                return None
+            if r.status_code != 200:
+                self.log(f"OPDS root fetch HTTP {r.status_code}: {r.text[:200]}")
+                return None
+
+            try:
+                root = ET.fromstring(r.text)
+            except ET.ParseError as e:
+                self.log(f"OPDS root parse error: {e}")
+                return None
+
+            atom_search_href = None
+            opensearch_href = None
+            for link in root.findall(f"{self.ATOM_NS}link"):
+                if link.get("rel") != "search":
+                    continue
+                href = link.get("href")
+                if not href:
+                    continue
+                t = (link.get("type") or "").lower()
+                if "opensearchdescription" in t:
+                    opensearch_href = href
+                else:
+                    atom_search_href = href
+
+            if atom_search_href and "{searchTerms}" in atom_search_href:
+                self._search_template = urljoin(str(r.url), atom_search_href)
+                return self._search_template
+
+            if opensearch_href:
+                desc_url = urljoin(str(r.url), opensearch_href)
+                rd = await client.get(desc_url)
+                if rd.status_code == 200:
+                    try:
+                        desc = ET.fromstring(rd.text)
+                    except ET.ParseError as e:
+                        self.log(f"OPDS OpenSearch parse error: {e}")
+                        return None
+                    # Prefer an Atom-typed Url template; otherwise take the first.
+                    chosen = None
+                    for u in desc.findall(f"{self.OPENSEARCH_NS}Url"):
+                        tpl = u.get("template")
+                        if not tpl or "{searchTerms}" not in tpl:
+                            continue
+                        if (u.get("type") or "").startswith("application/atom+xml"):
+                            chosen = tpl
+                            break
+                        chosen = chosen or tpl
+                    if chosen:
+                        self._search_template = urljoin(desc_url, chosen)
+                        return self._search_template
+
+        self.log("OPDS: no search link advertised on root catalog.")
+        return None
+
+    def _parse_feed(self, xml: str, author_norm: str, out: set) -> Optional[str]:
+        """Parse one Atom page; add normalised matching titles to `out`,
+        return the href of <link rel="next"> if present."""
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as e:
+            self.log(f"OPDS feed parse error: {e}")
+            return None
+        for entry in root.findall(f"{self.ATOM_NS}entry"):
+            title_el = entry.find(f"{self.ATOM_NS}title")
+            if title_el is None or not (title_el.text or "").strip():
+                continue
+            authors_norm = []
+            for a in entry.findall(f"{self.ATOM_NS}author"):
+                n = a.find(f"{self.ATOM_NS}name")
+                if n is not None and n.text:
+                    authors_norm.append(normalize_text(n.text))
+            # Only count entries that actually credit the queried author —
+            # OPDS search is typically a multi-field fuzzy match, so a search
+            # for "Stephen King" returns entries that merely mention King in
+            # the description too.
+            if not any(author_norm == n or author_norm in n or n in author_norm
+                       for n in authors_norm if n):
+                continue
+            out.add(normalize_text(title_el.text))
+        for link in root.findall(f"{self.ATOM_NS}link"):
+            if link.get("rel") == "next" and link.get("href"):
+                return link.get("href")
+        return None
 
 
 def _fmt_size(n: int) -> str:
@@ -912,8 +1104,14 @@ class MetadataFetcher:
         return author_data
 
     async def get_author_books(self, author_id: str, author_name: str = "",
-                                query: Optional[str] = None, mode: str = "strict") -> List[Dict]:
-        """Return the author's bibliography. mode is forwarded to Wikidata."""
+                                query: Optional[str] = None, mode: str = "strict",
+                                owned_titles: Optional[set] = None) -> List[Dict]:
+        """Return the author's bibliography. mode is forwarded to Wikidata.
+
+        owned_titles is an optional set of normalised titles already in the
+        user's library (sourced from an OPDS server). Each returned book gets
+        an `owned: bool` field; the UI annotates and optionally hides them.
+        """
         books: List[Dict] = []
         if author_name:
             books = await WikidataBibliography(self.client).fetch(author_name, mode=mode)
@@ -932,9 +1130,13 @@ class MetadataFetcher:
         for b in books[:25]:
             if not b["isbns"]:
                 enrichment_tasks.append(self._enrich_book(gb, author_name, b))
-        
+
         if enrichment_tasks:
             await asyncio.gather(*enrichment_tasks)
+
+        owned = owned_titles or set()
+        for b in books:
+            b["owned"] = normalize_text(b.get("title", "")) in owned if owned else False
 
         return sorted(books, key=lambda x: (x.get("year") or 9999, x.get("title", "")))
 

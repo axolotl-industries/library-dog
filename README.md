@@ -126,6 +126,9 @@ env var documented inline.
 | `QBIT_USER`/`QBIT_PASS`| unset          | qBittorrent credentials. |
 | `QBIT_SAVE_PATH`       | `/app/torrents` | Where qBit writes finished torrents. Must be visible to both Library Dog and qBit (mount the same host path into both). |
 | `QBIT_CATEGORY`        | `books`        | Category tag for Library Dog torrents. |
+| `OPDS_URL`             | unset          | OPDS catalog root for library-awareness (see below). Works with CW/CWA, Kavita, Komga, Ubooquity, plain Calibre. |
+| `OPDS_USERNAME`        | unset          | OPDS basic-auth username (CW/CWA/Komga). Leave blank for Kavita-style URL-key auth. |
+| `OPDS_PASSWORD`        | unset          | OPDS basic-auth password. |
 | `ENABLE_GREY_SOURCES`  | `false`        | Opt in to Anna's Archive / Libgen scraping (see below). |
 
 **Per-user settings live in the browser**, not in env vars: which
@@ -166,6 +169,43 @@ Setup:
    (or the same host path into both containers).
 2. Run with `PUID`/`PGID` matching whoever owns that folder.
 3. CWA picks up new files within ~30s.
+
+## Library awareness (optional)
+
+Point Library Dog at any OPDS-serving library and it'll mark books already in
+your collection so the picker can skip them. OPDS is a standard, so this works
+the same way against Calibre-Web / Calibre-Web-Automated, Kavita, Komga,
+Ubooquity, and plain Calibre's content server — Library Dog discovers the
+search URL from the catalog and queries it by author.
+
+Set three env vars:
+
+```yaml
+- OPDS_URL=http://cwa:8083/opds       # catalog ROOT — examples below
+- OPDS_USERNAME=library-dog
+- OPDS_PASSWORD=...
+```
+
+`OPDS_URL` is the OPDS catalog root for your server:
+
+| Server                          | URL                                          |
+|---------------------------------|----------------------------------------------|
+| Calibre-Web / CWA               | `http://host:8083/opds`                      |
+| Komga                           | `http://host:25600/opds/v1.2/catalog`        |
+| Kavita                          | `http://host:5000/api/opds/<api-key>`        |
+| Calibre content server          | `http://host:8080/opds`                      |
+
+Auth is HTTP Basic for CW/CWA/Komga (set `OPDS_USERNAME` + `OPDS_PASSWORD`).
+Kavita embeds its API key in the URL path itself — leave the username and
+password blank in that case. **Create a dedicated read-only user** in your
+library server rather than reusing admin credentials.
+
+When configured, books in the bibliography that are already in your library
+get an "In Library" badge and are unticked by default. A "Hide books already
+in library" toggle (persisted to `localStorage`) lets you collapse them out
+of the picker entirely once you trust the matches. Match is by normalised
+title against entries the OPDS feed credits to the searched author; failures
+fall through silently and the bibliography is shown unannotated.
 
 ## Sources
 
@@ -257,8 +297,8 @@ this.
 ## Known limitations / roadmap
 
 - Job state is in-memory; restart loses history.
-- No library-awareness: if a book is already in your Calibre
-  library, Library Dog will happily download it again.
+- Library-awareness via OPDS is title-match only — no ISBN cross-check.
+  Books with a renamed-on-import title in your library may not be detected.
 - No notifications (Apprise / Discord / etc.).
 - Single shared password; no multi-user accounts. Use forward-auth
   if you need real users.

@@ -411,7 +411,9 @@
         }
         .kind-badge.torrent { background: rgba(179, 157, 219, 0.15); color: var(--accent); }
         .kind-badge.usenet  { background: rgba(82, 148, 226, 0.15); color: var(--info); }
+        .kind-badge.owned   { background: rgba(120, 200, 120, 0.18); color: var(--ok, #6abf6a); margin-left: 8px; }
         :root[data-chrome="bbs"] .kind-badge { border-radius: 0; }
+        tr.owned-row td { opacity: 0.6; }
 
         details > summary {
             cursor: pointer;
@@ -880,6 +882,9 @@
 
     <div id="results-card" class="card" data-card="results" data-label=" [ RESULTS ] " style="display:none;">
         <h3 id="author-title"></h3>
+        <div id="library-toggle-wrap" style="display:none; margin-bottom:10px; font-size:13px;">
+            <label style="cursor:pointer;"><input type="checkbox" id="hide-owned-chk" onchange="onToggleHideOwned()"> Hide books already in library</label>
+        </div>
         <div class="table-container"><div id="results-list"></div></div>
         <div style="margin-top: 18px;">
             <button id="download-btn" onclick="startDownload()" style="max-width:200px;">Download selected</button>
@@ -1119,8 +1124,24 @@
 
         // --- App state ---
         let currentBooks = [], currentAuthor = "", pendingBook = null;
+        let opdsEnabled = false;
         const activeSessions = {};
         let _candidates = [];
+
+        // --- Hide-owned persistence ---
+        // Default off so "owned" books are visible-but-greyed; user can flip
+        // it for a cleaner picker once they know the OPDS match is reliable.
+        const HIDE_OWNED_KEY = 'librarydog.hideOwned';
+        function getHideOwned() {
+            try { return localStorage.getItem(HIDE_OWNED_KEY) === '1'; } catch (_) { return false; }
+        }
+        function setHideOwned(v) {
+            try { localStorage.setItem(HIDE_OWNED_KEY, v ? '1' : '0'); } catch (_) {}
+        }
+        function onToggleHideOwned() {
+            setHideOwned(document.getElementById('hide-owned-chk').checked);
+            renderResults();
+        }
 
         async function apiFetch(url, options) {
             const res = await fetch(url, options);
@@ -1204,15 +1225,36 @@
                 const data = await res.json();
 
                 currentAuthor = data.author; currentBooks = data.books;
+                opdsEnabled = !!data.opds_enabled;
                 document.getElementById('author-title').innerText = `${data.books.length} book${data.books.length !== 1 ? 's' : ''} for ${data.author}`;
                 document.getElementById('results-card').style.display = 'block';
 
-                let h = `<table><tr><th class="chk-col"><input type="checkbox" checked onclick="toggleAll(this)"></th><th>Year</th><th>Title</th></tr>`;
-                data.books.forEach((b, i) => h += `<tr><td class="chk-col"><input type="checkbox" class="book-chk" data-i="${i}" checked></td><td>${b.year || '—'}</td><td>${b.title}</td></tr>`);
-                document.getElementById('results-list').innerHTML = h + '</table>';
+                const wrap = document.getElementById('library-toggle-wrap');
+                wrap.style.display = opdsEnabled ? '' : 'none';
+                document.getElementById('hide-owned-chk').checked = getHideOwned();
+
+                renderResults();
             } finally {
                 btn.disabled = false; btn.innerText = 'Search';
             }
+        }
+
+        function renderResults() {
+            const hide = getHideOwned();
+            const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            // Build a "select all" checkbox state matching the rows that will actually be rendered:
+            // checked iff every visible row would be checked (i.e. nothing is owned, or hide=on).
+            let h = `<table><tr><th class="chk-col"><input type="checkbox" checked onclick="toggleAll(this)"></th><th>Year</th><th>Title</th></tr>`;
+            currentBooks.forEach((b, i) => {
+                if (b.owned && hide) return;
+                const ownedBadge = b.owned ? ' <span class="kind-badge owned">In Library</span>' : '';
+                const rowCls = b.owned ? ' class="owned-row"' : '';
+                // Owned books default to unchecked even when visible — user can re-tick if they
+                // want a fresh copy (broken file, format upgrade, etc.).
+                const checked = b.owned ? '' : 'checked';
+                h += `<tr${rowCls}><td class="chk-col"><input type="checkbox" class="book-chk" data-i="${i}" ${checked}></td><td>${b.year || '—'}</td><td>${escapeHtml(b.title)}${ownedBadge}</td></tr>`;
+            });
+            document.getElementById('results-list').innerHTML = h + '</table>';
         }
 
         function toggleAll(m) { document.querySelectorAll('.book-chk').forEach(c => c.checked = m.checked); }

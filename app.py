@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from core import (
     MetadataFetcher, ScraperEngine, Downloader, ProwlarrClient, SabnzbdClient, QbitClient,
-    GutenbergClient, flatten_downloads, hardlink_books_to_root, has_playwright,
+    GutenbergClient, OpdsClient, flatten_downloads, hardlink_books_to_root, has_playwright,
     resolve_annas_domain,
 )
 
@@ -181,9 +181,17 @@ async def search(author: str, query: str = None, u: str = Depends(current_user))
 async def author_books(author_id: str, author_name: str, query: str = None,
                        mode: str = "strict", u: str = Depends(current_user)):
     fetcher = MetadataFetcher()
+    opds = OpdsClient(
+        os.getenv('OPDS_URL'),
+        os.getenv('OPDS_USERNAME', ''),
+        os.getenv('OPDS_PASSWORD', ''),
+        lambda m: print(f"[opds] {m}", file=sys.stderr, flush=True),
+    )
     try:
-        books = await fetcher.get_author_books(author_id, author_name, query, mode=mode)
-        return {"author": author_name, "books": books}
+        owned = await opds.owned_titles(author_name) if opds.configured() else set()
+        books = await fetcher.get_author_books(author_id, author_name, query, mode=mode,
+                                                owned_titles=owned)
+        return {"author": author_name, "books": books, "opds_enabled": opds.configured()}
     finally:
         await fetcher.aclose()
 

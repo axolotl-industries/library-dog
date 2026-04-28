@@ -62,6 +62,27 @@ services:
       - QBIT_SAVE_PATH=${QBIT_SAVE_PATH:-/app/torrents}
       - QBIT_CATEGORY=${QBIT_CATEGORY:-books}
 
+      # --- Library awareness via OPDS (optional) ---
+      # Point at any OPDS-serving library (Calibre-Web / Calibre-Web-Automated,
+      # Kavita, Komga, Ubooquity, plain Calibre, ...) and Library Dog will mark
+      # books that are already in your library so you don't re-download them.
+      # The bibliography still shows them — flip the in-UI toggle to hide.
+      #
+      # OPDS_URL is the catalog ROOT (the page the server's OPDS feed starts at).
+      # Examples:
+      #   Calibre-Web / CWA: http://cwa:8083/opds
+      #   Komga:             http://komga:25600/opds/v1.2/catalog
+      #   Kavita:            http://kavita:5000/api/opds/<api-key>
+      #   Calibre server:    http://calibre:8080/opds
+      #
+      # Auth is HTTP Basic for CW/CWA/Komga (set username + password). Kavita
+      # embeds its API key in the URL path — leave username/password blank in
+      # that case. Recommended: create a dedicated read-only user in your
+      # library server rather than reusing your admin credentials.
+      - OPDS_URL=${OPDS_URL:-}
+      - OPDS_USERNAME=${OPDS_USERNAME:-}
+      - OPDS_PASSWORD=${OPDS_PASSWORD:-}
+
       # --- Grey sources (off by default) ---
       # Anna's Archive + Libgen scraping. Legally grey in many jurisdictions; also
       # drags in a Playwright/Chromium runtime. Project Gutenberg + Newznab indexers

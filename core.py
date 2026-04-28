@@ -418,6 +418,13 @@ class OpdsClient:
     ATOM_NS = "{http://www.w3.org/2005/Atom}"
     OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
 
+    # Generic-placeholder authors many catalogs use for compilations when no
+    # individual editor is recorded. An entry credited only to one of these is
+    # accepted into the owned-set on the strength of its title alone, since
+    # anthology editors (Datlow, Dozois, etc.) frequently land in libraries
+    # under these placeholders rather than under their own name.
+    _GENERIC_AUTHORS = {"anthology", "various", "various authors"}
+
     def __init__(self, base_url: str, username: str, password: str, log_func: Callable = print):
         self.base_url = (base_url or "").strip().rstrip('/')
         self.username = (username or "").strip()
@@ -579,9 +586,14 @@ class OpdsClient:
             # Only count entries that actually credit the queried author —
             # OPDS search is typically a multi-field fuzzy match, so a search
             # for "Stephen King" returns entries that merely mention King in
-            # the description too.
-            if not any(author_norm == n or author_norm in n or n in author_norm
-                       for n in authors_norm if n):
+            # the description too. Entries credited only to a generic
+            # placeholder ("Anthology", "Various", ...) are accepted on the
+            # strength of the title alone, since anthology editors often
+            # land in libraries under those rather than their own name.
+            credited = any(author_norm == n or author_norm in n or n in author_norm
+                           for n in authors_norm if n)
+            generic_only = bool(authors_norm) and all(n in self._GENERIC_AUTHORS for n in authors_norm)
+            if not credited and not generic_only:
                 continue
             out.add(_norm_title_for_match(title_el.text))
         for link in root.findall(f"{self.ATOM_NS}link"):

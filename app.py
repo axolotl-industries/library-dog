@@ -428,8 +428,9 @@ async def run_background_download(job_id, data):
             if scraper and not (_library_books() - before):
                 mirrors = await scraper.get_mirrors(data['author'], b['title'], b['isbns'],
                                                      formats=formats)
-                for name, url, fmt in mirrors:
-                    if await downloader.download(name, url, data['author'], b['title'], b, fmt=fmt):
+                for name, url, fmt, cookies, referer in mirrors:
+                    if await downloader.download(name, url, data['author'], b['title'], b,
+                                                  fmt=fmt, cookies=cookies, referer=referer):
                         break
 
             # Check if the specific book we wanted (or at least something new) exists

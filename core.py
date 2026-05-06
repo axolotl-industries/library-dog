@@ -1372,9 +1372,14 @@ class ScraperEngine:
         """Open a mirror/interstitial page and return the first link that
         looks like an actual download.
 
-        Resilient to UI churn: we match by href patterns, link text, AND
-        outbound CDN-style hosts. The original "find one regex match" was
-        the main reason a Libgen redesign would silently break us.
+        Resilient to UI churn: we match by link text, href patterns, AND
+        outbound CDN-style hosts. Within link-text matching we deliberately
+        prefer gateway-based mirrors (Cloudflare-IPFS, IPFS.io, Pinata,
+        Crust) over keyed GET buttons — the gateway URLs are durable and
+        anonymous, while `get.php?md5=…&key=…` is session-bound and the
+        key only works for the (browser) client that requested it. Picking
+        a keyed URL and handing it to httpx is exactly how we got
+        intermittent silent failures.
         """
         try:
             await page.goto(url, timeout=20000)
@@ -1383,12 +1388,16 @@ class ScraperEngine:
             except Exception: pass
             soup = BeautifulSoup(await page.content(), 'html.parser')
 
-            # 1) Link text says GET / Download / a known mirror name.
-            text_targets = {"get", "download", "cloudflare", "ipfs.io", "ipfs gateway", "pinata", "crust"}
+            # 1) Link-text priority: gateways before keyed buttons.
+            text_priority = ["cloudflare", "ipfs.io", "ipfs gateway", "pinata", "crust", "get", "download"]
+            text_hits: Dict[str, str] = {}
             for a in soup.find_all('a', href=True):
                 txt = " ".join(a.get_text(" ", strip=True).lower().split())
-                if txt in text_targets:
-                    return urljoin(url, a['href'])
+                if txt in text_priority:
+                    text_hits.setdefault(txt, a['href'])
+            for key in text_priority:
+                if key in text_hits:
+                    return urljoin(url, text_hits[key])
 
             # 2) Href pattern: get.php / /get/ / /main/ / /dl/ / /download/.
             link = soup.find('a', href=re.compile(r"(?:get\.php|/get/|/main/|/dl/|/download/)", re.I))
@@ -1409,35 +1418,54 @@ class ScraperEngine:
             self.log(f"Mirror resolve failed for {url[:80]}: {type(e).__name__}: {str(e)[:100]}")
         return None
 
-    async def _resolve_md5(self, md5: str, page) -> Optional[Tuple[str, str]]:
+    async def _cookies_for(self, url: str, page) -> Dict[str, str]:
+        """Snapshot the browser's cookies relevant to `url` so the
+        Downloader (httpx) can present the same session a keyed GET URL
+        was minted under."""
+        try:
+            cs = await page.context.cookies(url)
+            return {c['name']: c['value'] for c in cs}
+        except Exception:
+            return {}
+
+    async def _resolve_md5(self, md5: str, page) -> Optional[Tuple[str, str, Dict[str, str], str]]:
         """Given a canonical file MD5, walk multiple resolvers until one
         yields a direct download URL. The MD5 is the stable key shared by
         every Libgen fork and Anna's Archive, so this isolates the brittle
         "where do I click GET" step from the relatively stable "what's
         this file's identity" step.
+
+        Order matters: library.lol exposes Cloudflare-IPFS and IPFS.io
+        gateways for every entry — gateway URLs survive cookie-less
+        downloads. The libgen.li-family ads pages only offer keyed GET,
+        so we try them last; even when picked they ride alongside the
+        captured cookies + ads-page Referer the Downloader will replay.
+
+        Returns (name, direct_url, cookies, referer) on success.
         """
         md5_u = md5.upper()
         candidates = [
+            ("library.lol",  f"https://library.lol/main/{md5_u}"),
+            ("library.lol",  f"https://library.lol/fiction/{md5_u}"),
             ("Libgen",       f"https://libgen.li/ads.php?md5={md5_u}"),
             ("Libgen.gs",    f"https://libgen.gs/ads.php?md5={md5_u}"),
             ("Libgen.la",    f"https://libgen.la/ads.php?md5={md5_u}"),
-            ("library.lol",  f"https://library.lol/main/{md5_u}"),
-            ("library.lol",  f"https://library.lol/fiction/{md5_u}"),
         ]
-        for name, u in candidates:
-            direct = await self._resolve_mirror(u, page)
+        for name, ads_url in candidates:
+            direct = await self._resolve_mirror(ads_url, page)
             if direct:
-                return (name, direct)
+                cookies = await self._cookies_for(direct, page)
+                return (name, direct, cookies, ads_url)
         return None
 
     async def _search_libgen_host(self, host: str, q: str, fmt: str, page,
-                                   title_match, author_parts) -> List[Tuple[str, str, str]]:
+                                   title_match, author_parts) -> List[Tuple[str, str, str, Dict[str, str], str]]:
         """Search one Libgen-family host for `q` and return any mirrors
         we could resolve. Row parsing is intentionally column-agnostic:
         we anchor on whichever <a> in the row carries the md5 query
         param, then check the row's full text for format/language/title/
         author. Survives column reorders and table-id changes."""
-        results: List[Tuple[str, str, str]] = []
+        results: List[Tuple[str, str, str, Dict[str, str], str]] = []
         try:
             await page.goto(f"https://{host}/index.php?req={quote(q)}&res=25&filesuns=all", timeout=30000)
             try:
@@ -1457,9 +1485,9 @@ class ScraperEngine:
                 if author_parts and not any(p in row_text for p in author_parts): continue
                 resolved = await self._resolve_md5(md5, page)
                 if resolved:
-                    name, direct = resolved
+                    name, direct, cookies, referer = resolved
                     self.log(f"Found {name} mirror via {host} ({fmt}, md5={md5[:8]}…).")
-                    results.append((name, direct, fmt))
+                    results.append((name, direct, fmt, cookies, referer))
                     break
         except asyncio.CancelledError: raise
         except Exception as e:
@@ -1467,12 +1495,16 @@ class ScraperEngine:
         return results
 
     async def get_mirrors(self, author: str, title: str, isbns: List[str],
-                          formats: Optional[List[str]] = None) -> List[Tuple[str, str, str]]:
+                          formats: Optional[List[str]] = None) -> List[Tuple[str, str, str, Dict[str, str], str]]:
         """Find downloadable mirrors for (author, title) across Libgen + Anna's.
 
-        Returns (mirror_name, direct_url, format) tuples, in order of attempt
-        priority. The format propagates to the Downloader so PDF mirrors land
-        with a `.pdf` extension and skip EPUB-specific validation.
+        Returns (mirror_name, direct_url, format, cookies, referer) tuples,
+        in order of attempt priority. The format propagates to the
+        Downloader so PDF mirrors land with a `.pdf` extension and skip
+        EPUB-specific validation. Cookies + referer let the Downloader
+        replay the session a keyed `get.php?…&key=…` URL was minted under
+        (Playwright resolved the page, but httpx has no cookies of its
+        own).
 
         Search strategy:
           - Outer loop: user's enabled formats in priority order. Falls back to
@@ -1488,13 +1520,16 @@ class ScraperEngine:
                                                 handles entries whose mirror
                                                 listing doesn't carry the
                                                 subtitle.
-          - Per query, try each Libgen-family host in turn before falling
-            back to Anna's Archive. Once we have an MD5 from any source we
-            try several resolvers (libgen.li/.gs/.la, library.lol) — that's
-            the layer that historically breaks when a site redesigns.
+          - Per query, run BOTH the Libgen-family host loop and the
+            Anna's Archive lookup, then return the combined list with
+            Libgen first. This matters because a Libgen "hit" can resolve
+            to a keyed URL whose key has expired or been rotated — when
+            the Downloader trips on it, it falls through to Anna's-sourced
+            mirrors (often Cloudflare-IPFS gateways from library.lol)
+            without us needing to re-search.
         """
         formats = list(formats) if formats else ["epub"]
-        mirrors: List[Tuple[str, str, str]] = []
+        mirrors: List[Tuple[str, str, str, Dict[str, str], str]] = []
         page = await self.browser.new_page()
         norm_title_full = normalize_text(title.replace(':', ' '))
         norm_title = normalize_text(title)
@@ -1520,13 +1555,25 @@ class ScraperEngine:
             for fmt in formats:
                 for q in queries:
                     self.log(f"Mirror search '{title}' [{fmt}]: {q}")
+                    libgen_hits: List[Tuple[str, str, str, Dict[str, str], str]] = []
+                    annas_hits: List[Tuple[str, str, str, Dict[str, str], str]] = []
+                    seen_md5: set = set()
+
+                    # Libgen-family path. One host's md5 is enough — they
+                    # share catalogs. Different hosts won't yield distinct
+                    # files for the same query.
                     for host in self._LIBGEN_HOSTS:
                         hits = await self._search_libgen_host(host, q, fmt, page, _title_match, author_parts)
                         if hits:
-                            mirrors.extend(hits)
+                            libgen_hits.extend(hits)
+                            for h in hits:
+                                m = _extract_md5(h[1])
+                                if m: seen_md5.add(m)
                             break
-                    if mirrors: break
 
+                    # Anna's path. Runs regardless of Libgen result so
+                    # that a Libgen-keyed URL that 404s falls through to
+                    # an IPFS-gateway URL from the same or alternate md5.
                     try:
                         await page.goto(f"{self.annas_base}/search?q={quote(q)}&ext={fmt}&lang=en", timeout=30000)
                         results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
@@ -1535,25 +1582,33 @@ class ScraperEngine:
                             if not (_title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True)):
                                 continue
                             md5 = _extract_md5(cand.get('href', ''))
-                            if not md5: continue
+                            if not md5 or md5 in seen_md5: continue
+                            seen_md5.add(md5)
                             resolved = await self._resolve_md5(md5, page)
                             if resolved:
-                                name, direct = resolved
+                                name, direct, cookies, referer = resolved
                                 self.log(f"Found Anna's→{name} mirror ({fmt}, md5={md5[:8]}…).")
-                                mirrors.append((f"Anna {name}", direct, fmt))
+                                annas_hits.append((f"Anna {name}", direct, fmt, cookies, referer))
                             try:
                                 await page.goto(urljoin(self.annas_base, cand['href']), timeout=30000)
                                 msoup = BeautifulSoup(await page.content(), 'html.parser')
                                 ipfs = msoup.find('a', href=re.compile(r"ipfs"))
                                 if ipfs and 'ipfs://' in ipfs.get('href', ''):
-                                    mirrors.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt))
+                                    annas_hits.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt, {}, ""))
                             except asyncio.CancelledError: raise
                             except Exception: pass
-                            if len(mirrors) >= 3: break
-                        if mirrors: break
+                            if len(annas_hits) >= 3: break
                     except asyncio.CancelledError: raise
                     except Exception as e:
                         self.log(f"Anna's search '{q}' failed: {type(e).__name__}: {str(e)[:100]}")
+
+                    # Libgen-first ordering: Downloader walks the list and
+                    # only falls through to Anna's mirrors when Libgen's
+                    # entries fail. Usenet is handled by the caller before
+                    # us, so the overall order is Usenet > Libgen > Anna's.
+                    mirrors.extend(libgen_hits)
+                    mirrors.extend(annas_hits)
+                    if mirrors: break
                 if mirrors: break
         finally: await page.close()
         return mirrors
@@ -1609,7 +1664,9 @@ class Downloader:
         os.makedirs(self.base_dir, exist_ok=True)
 
     async def download(self, mirror: str, url: str, author: str, title: str,
-                       book_data: Dict, fmt: str = "epub") -> bool:
+                       book_data: Dict, fmt: str = "epub",
+                       cookies: Optional[Dict[str, str]] = None,
+                       referer: Optional[str] = None) -> bool:
         """Stream a book from `url` into the watch folder.
 
         EPUBs are validated structurally (zip + mimetype entry) and metadata-
@@ -1619,16 +1676,39 @@ class Downloader:
         preserved for EPUB only — non-EPUB grey downloads still get the
         "needs review" treatment via the bibliography UX, just not the
         in-file tag.
+
+        `cookies` and `referer` come from the ScraperEngine's browser
+        session at resolve time. Keyed Libgen URLs (`get.php?…&key=…`)
+        only work for the client that minted them; replaying the
+        cookies + Referer is what lets httpx finish what Playwright
+        started. They're optional — gateway URLs (Cloudflare-IPFS,
+        ipfs.io) don't need either.
         """
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
         path = os.path.join(self.base_dir, f"{safe_title}.{fmt}")
+        headers = {"User-Agent": UA}
+        if referer: headers["Referer"] = referer
         for cfg in [{"verify": self.ssl_ctx}, {"verify": False}]:
             try:
-                async with httpx.AsyncClient(follow_redirects=True, timeout=60.0, headers={"User-Agent": UA}, **cfg) as client:
+                async with httpx.AsyncClient(follow_redirects=True, timeout=60.0,
+                                              headers=headers, cookies=cookies or {},
+                                              **cfg) as client:
                     async with client.stream("GET", url) as resp:
-                        if resp.status_code != 200 or "text/html" in resp.headers.get("Content-Type", "").lower(): continue
+                        # Diagnostic logging on rejection so a future
+                        # mirror failure tells us *why*. Silent `continue`
+                        # was the main reason the previous breakage was
+                        # invisible.
+                        if resp.status_code != 200:
+                            self.log(f"{mirror}: HTTP {resp.status_code} from {url[:80]}")
+                            continue
+                        ct = resp.headers.get("Content-Type", "").lower()
+                        if "text/html" in ct:
+                            self.log(f"{mirror}: server returned HTML (likely interstitial / blocked)")
+                            continue
                         size = int(resp.headers.get("Content-Length", 0))
-                        if size > 0 and (size < 10000 or size > 40*1024*1024): continue
+                        if size > 0 and (size < 10000 or size > 40*1024*1024):
+                            self.log(f"{mirror}: rejected Content-Length={size}")
+                            continue
                         self.log(f"Downloading from {mirror}...")
                         with open(path, "wb") as f:
                             async for chunk in resp.aiter_bytes(): f.write(chunk)
@@ -1639,13 +1719,16 @@ class Downloader:
                             if 'mimetype' in z.namelist():
                                 await self._enrich_epub(path, author, title, book_data, source=mirror)
                                 self.log(f"Saved to: {path}"); return True
+                    self.log(f"{mirror}: downloaded file is not a valid EPUB; discarding")
                     if os.path.exists(path): os.remove(path)
                 else:
                     if os.path.exists(path) and os.path.getsize(path) > 10000:
                         self.log(f"Saved to: {path}"); return True
+                    self.log(f"{mirror}: downloaded file too small ({os.path.getsize(path) if os.path.exists(path) else 0} bytes); discarding")
                     if os.path.exists(path): os.remove(path)
             except asyncio.CancelledError: raise
-            except Exception:
+            except Exception as e:
+                self.log(f"{mirror}: {type(e).__name__}: {str(e)[:120]}")
                 if os.path.exists(path): os.remove(path)
         return False
 

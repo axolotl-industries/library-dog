@@ -217,9 +217,21 @@ def create_robust_ssl_context():
     except:
         return ssl._create_unverified_context()
 
+# Annas's official mirror set. The HEAD probe at startup is best-effort —
+# a domain that responds to HEAD can still 503 / Cloudflare-block /search,
+# so we keep the full list around for live rotation in get_mirrors.
+ANNAS_MIRRORS = (
+    "https://annas-archive.org",
+    "https://annas-archive.se",
+    "https://annas-archive.li",
+    "https://annas-archive.gs",
+)
+
 async def resolve_annas_domain(log_func: Callable) -> str:
-    mirrors = ["https://annas-archive.se", "https://annas-archive.li", "https://annas-archive.gs"]
-    for m in mirrors:
+    # .org is the canonical primary; .se/.li/.gs are official mirrors that
+    # rotate live as Anna's chases blocking. We probe in the order users
+    # expect and fall through to .gl as a last-ditch alias.
+    for m in ANNAS_MIRRORS:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 if (await client.head(m)).status_code < 400: return m
@@ -1346,7 +1358,12 @@ class ScraperEngine:
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+            # --ignore-certificate-errors is a deliberate scraper-side
+            # tolerance for grey hosts whose CA chains rot regularly
+            # (library.lol's cert authority has flapped to invalid more
+            # than once). We're not authenticating to these hosts; we
+            # just want the HTML.
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"],
         )
 
     async def stop(self):
@@ -1359,7 +1376,9 @@ class ScraperEngine:
     # Libgen-family hosts that share the .li-fork search UI. Tried in order
     # — when one is down or has shifted its HTML, the next usually still
     # works. Add new ones to the head; old ones at the tail age out.
-    _LIBGEN_HOSTS = ("libgen.li", "libgen.gs", "libgen.la", "libgen.bz")
+    # libgen.gs was dropped after ERR_NAME_NOT_RESOLVED in production
+    # (DNS gone). Add it back if it returns.
+    _LIBGEN_HOSTS = ("libgen.li", "libgen.la", "libgen.bz")
 
     # Non-English language tokens that, if present in a result row, disqualify
     # it. Anything else (English or unspecified) passes the language gate.
@@ -1448,8 +1467,8 @@ class ScraperEngine:
             ("library.lol",  f"https://library.lol/main/{md5_u}"),
             ("library.lol",  f"https://library.lol/fiction/{md5_u}"),
             ("Libgen",       f"https://libgen.li/ads.php?md5={md5_u}"),
-            ("Libgen.gs",    f"https://libgen.gs/ads.php?md5={md5_u}"),
             ("Libgen.la",    f"https://libgen.la/ads.php?md5={md5_u}"),
+            ("Libgen.bz",    f"https://libgen.bz/ads.php?md5={md5_u}"),
         ]
         for name, ads_url in candidates:
             direct = await self._resolve_mirror(ads_url, page)
@@ -1574,33 +1593,48 @@ class ScraperEngine:
                     # Anna's path. Runs regardless of Libgen result so
                     # that a Libgen-keyed URL that 404s falls through to
                     # an IPFS-gateway URL from the same or alternate md5.
-                    try:
-                        await page.goto(f"{self.annas_base}/search?q={quote(q)}&ext={fmt}&lang=en", timeout=30000)
-                        results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
-                        for cand in results[:10]:
-                            cand_t = normalize_text(cand.get_text())
-                            if not (_title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True)):
-                                continue
-                            md5 = _extract_md5(cand.get('href', ''))
-                            if not md5 or md5 in seen_md5: continue
-                            seen_md5.add(md5)
-                            resolved = await self._resolve_md5(md5, page)
-                            if resolved:
-                                name, direct, cookies, referer = resolved
-                                self.log(f"Found Anna's→{name} mirror ({fmt}, md5={md5[:8]}…).")
-                                annas_hits.append((f"Anna {name}", direct, fmt, cookies, referer))
-                            try:
-                                await page.goto(urljoin(self.annas_base, cand['href']), timeout=30000)
-                                msoup = BeautifulSoup(await page.content(), 'html.parser')
-                                ipfs = msoup.find('a', href=re.compile(r"ipfs"))
-                                if ipfs and 'ipfs://' in ipfs.get('href', ''):
-                                    annas_hits.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt, {}, ""))
-                            except asyncio.CancelledError: raise
-                            except Exception: pass
-                            if len(annas_hits) >= 3: break
-                    except asyncio.CancelledError: raise
-                    except Exception as e:
-                        self.log(f"Anna's search '{q}' failed: {type(e).__name__}: {str(e)[:100]}")
+                    # Rotate across mirror domains because the startup
+                    # HEAD probe is eventually stale (a domain that
+                    # answered HEAD at boot can be Cloudflare-blocking
+                    # /search now).
+                    annas_to_try = [self.annas_base] + [b for b in ANNAS_MIRRORS if b != self.annas_base]
+                    annas_used: Optional[str] = None
+                    for ab in annas_to_try:
+                        try:
+                            await page.goto(f"{ab}/search?q={quote(q)}&ext={fmt}&lang=en", timeout=25000)
+                            annas_used = ab
+                            break
+                        except asyncio.CancelledError: raise
+                        except Exception as e:
+                            self.log(f"Anna's at {ab.split('//')[1]} unreachable: {type(e).__name__}: {str(e)[:80]}")
+
+                    if annas_used:
+                        try:
+                            results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
+                            for cand in results[:10]:
+                                cand_t = normalize_text(cand.get_text())
+                                if not (_title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True)):
+                                    continue
+                                md5 = _extract_md5(cand.get('href', ''))
+                                if not md5 or md5 in seen_md5: continue
+                                seen_md5.add(md5)
+                                resolved = await self._resolve_md5(md5, page)
+                                if resolved:
+                                    name, direct, cookies, referer = resolved
+                                    self.log(f"Found Anna's→{name} mirror ({fmt}, md5={md5[:8]}…).")
+                                    annas_hits.append((f"Anna {name}", direct, fmt, cookies, referer))
+                                try:
+                                    await page.goto(urljoin(annas_used, cand['href']), timeout=30000)
+                                    msoup = BeautifulSoup(await page.content(), 'html.parser')
+                                    ipfs = msoup.find('a', href=re.compile(r"ipfs"))
+                                    if ipfs and 'ipfs://' in ipfs.get('href', ''):
+                                        annas_hits.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt, {}, ""))
+                                except asyncio.CancelledError: raise
+                                except Exception: pass
+                                if len(annas_hits) >= 3: break
+                        except asyncio.CancelledError: raise
+                        except Exception as e:
+                            self.log(f"Anna's parse for '{q}' on {annas_used.split('//')[1]} failed: {type(e).__name__}: {str(e)[:100]}")
 
                     # Libgen-first ordering: Downloader walks the list and
                     # only falls through to Anna's mirrors when Libgen's
@@ -1686,6 +1720,19 @@ class Downloader:
         """
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
         path = os.path.join(self.base_dir, f"{safe_title}.{fmt}")
+        # CWA normally consumes files from the watch folder, but a stale
+        # orphan (CWA didn't ingest, or PUID/host-uid mismatch left a
+        # file we don't own) makes "wb" open fail with EACCES on every
+        # subsequent run. Clear it pre-emptively. If the unlink itself
+        # fails, the directory is unwritable to us — bail loudly so the
+        # user sees the cause instead of a silent retry loop.
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                self.log(f"{mirror}: cannot overwrite {path} ({type(e).__name__}); "
+                         f"check volume PUID/PGID or remove the orphan manually")
+                return False
         headers = {"User-Agent": UA}
         if referer: headers["Referer"] = referer
         for cfg in [{"verify": self.ssl_ctx}, {"verify": False}]:

@@ -1314,6 +1314,16 @@ def has_playwright() -> bool:
         return False
 
 
+# A 32-char MD5 keys every Libgen-family entry and is the same hash Anna's
+# Archive uses in its /md5/<hash> URLs. Once we extract it, mirror resolution
+# stops depending on any one site's HTML structure.
+_MD5_RE = re.compile(r"(?i)(?:[?&]md5=|/md5/)([a-f0-9]{32})")
+
+def _extract_md5(url: str) -> Optional[str]:
+    m = _MD5_RE.search(url or "")
+    return m.group(1).lower() if m else None
+
+
 class ScraperEngine:
     def __init__(self, log_func: Callable):
         self.log = log_func
@@ -1346,14 +1356,115 @@ class ScraperEngine:
         except: pass
         await self.client.aclose()
 
+    # Libgen-family hosts that share the .li-fork search UI. Tried in order
+    # — when one is down or has shifted its HTML, the next usually still
+    # works. Add new ones to the head; old ones at the tail age out.
+    _LIBGEN_HOSTS = ("libgen.li", "libgen.gs", "libgen.la", "libgen.bz")
+
+    # Non-English language tokens that, if present in a result row, disqualify
+    # it. Anything else (English or unspecified) passes the language gate.
+    _NON_EN_RE = re.compile(
+        r"\b(german|french|spanish|russian|italian|chinese|japanese|portuguese|polish|dutch|arabic|korean|turkish|hebrew|persian|hindi|ukrainian|czech|swedish|danish|finnish|norwegian|greek|romanian|hungarian)\b",
+        re.I,
+    )
+
     async def _resolve_mirror(self, url: str, page) -> Optional[str]:
+        """Open a mirror/interstitial page and return the first link that
+        looks like an actual download.
+
+        Resilient to UI churn: we match by href patterns, link text, AND
+        outbound CDN-style hosts. The original "find one regex match" was
+        the main reason a Libgen redesign would silently break us.
+        """
         try:
-            await page.goto(url, timeout=15000)
-            link = BeautifulSoup(await page.content(), 'html.parser').find('a', href=re.compile(r"get\.php|/get/|download", re.I))
-            if link: return urljoin(url, link['href'])
+            await page.goto(url, timeout=20000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception: pass
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+
+            # 1) Link text says GET / Download / a known mirror name.
+            text_targets = {"get", "download", "cloudflare", "ipfs.io", "ipfs gateway", "pinata", "crust"}
+            for a in soup.find_all('a', href=True):
+                txt = " ".join(a.get_text(" ", strip=True).lower().split())
+                if txt in text_targets:
+                    return urljoin(url, a['href'])
+
+            # 2) Href pattern: get.php / /get/ / /main/ / /dl/ / /download/.
+            link = soup.find('a', href=re.compile(r"(?:get\.php|/get/|/main/|/dl/|/download/)", re.I))
+            if link and link.get('href'):
+                return urljoin(url, link['href'])
+
+            # 3) Outbound CDN-style host (Cloudflare IPFS, ipfs.io, libgen
+            #    file servers, library.lol's mirror domains, etc.).
+            cdn_re = re.compile(
+                r"^https?://(?:[^/]+\.)?(?:cloudflare-ipfs|ipfs\.io|gateway\.ipfs|libgen|library\.lol|booksdescr|booksdl|cdn\d?\.|download\.)",
+                re.I,
+            )
+            for a in soup.find_all('a', href=True):
+                if cdn_re.match(a['href']):
+                    return urljoin(url, a['href'])
         except asyncio.CancelledError: raise
-        except Exception: pass
+        except Exception as e:
+            self.log(f"Mirror resolve failed for {url[:80]}: {type(e).__name__}: {str(e)[:100]}")
         return None
+
+    async def _resolve_md5(self, md5: str, page) -> Optional[Tuple[str, str]]:
+        """Given a canonical file MD5, walk multiple resolvers until one
+        yields a direct download URL. The MD5 is the stable key shared by
+        every Libgen fork and Anna's Archive, so this isolates the brittle
+        "where do I click GET" step from the relatively stable "what's
+        this file's identity" step.
+        """
+        md5_u = md5.upper()
+        candidates = [
+            ("Libgen",       f"https://libgen.li/ads.php?md5={md5_u}"),
+            ("Libgen.gs",    f"https://libgen.gs/ads.php?md5={md5_u}"),
+            ("Libgen.la",    f"https://libgen.la/ads.php?md5={md5_u}"),
+            ("library.lol",  f"https://library.lol/main/{md5_u}"),
+            ("library.lol",  f"https://library.lol/fiction/{md5_u}"),
+        ]
+        for name, u in candidates:
+            direct = await self._resolve_mirror(u, page)
+            if direct:
+                return (name, direct)
+        return None
+
+    async def _search_libgen_host(self, host: str, q: str, fmt: str, page,
+                                   title_match, author_parts) -> List[Tuple[str, str, str]]:
+        """Search one Libgen-family host for `q` and return any mirrors
+        we could resolve. Row parsing is intentionally column-agnostic:
+        we anchor on whichever <a> in the row carries the md5 query
+        param, then check the row's full text for format/language/title/
+        author. Survives column reorders and table-id changes."""
+        results: List[Tuple[str, str, str]] = []
+        try:
+            await page.goto(f"https://{host}/index.php?req={quote(q)}&res=25&filesuns=all", timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception: pass
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+            rows = soup.select('table[id="table-libgen"] tr') or soup.find_all('tr')[1:]
+            for r in rows:
+                md5_link = r.find('a', href=re.compile(r"(?i)md5="))
+                if not md5_link: continue
+                md5 = _extract_md5(md5_link.get('href', ''))
+                if not md5: continue
+                row_text = r.get_text(" ", strip=True).lower()
+                if fmt and fmt not in row_text: continue
+                if self._NON_EN_RE.search(row_text): continue
+                if not title_match(row_text): continue
+                if author_parts and not any(p in row_text for p in author_parts): continue
+                resolved = await self._resolve_md5(md5, page)
+                if resolved:
+                    name, direct = resolved
+                    self.log(f"Found {name} mirror via {host} ({fmt}, md5={md5[:8]}…).")
+                    results.append((name, direct, fmt))
+                    break
+        except asyncio.CancelledError: raise
+        except Exception as e:
+            self.log(f"Libgen search '{q}' on {host} failed: {type(e).__name__}: {str(e)[:100]}")
+        return results
 
     async def get_mirrors(self, author: str, title: str, isbns: List[str],
                           formats: Optional[List[str]] = None) -> List[Tuple[str, str, str]]:
@@ -1377,6 +1488,10 @@ class ScraperEngine:
                                                 handles entries whose mirror
                                                 listing doesn't carry the
                                                 subtitle.
+          - Per query, try each Libgen-family host in turn before falling
+            back to Anna's Archive. Once we have an MD5 from any source we
+            try several resolvers (libgen.li/.gs/.la, library.lol) — that's
+            the layer that historically breaks when a site redesigns.
         """
         formats = list(formats) if formats else ["epub"]
         mirrors: List[Tuple[str, str, str]] = []
@@ -1405,47 +1520,40 @@ class ScraperEngine:
             for fmt in formats:
                 for q in queries:
                     self.log(f"Mirror search '{title}' [{fmt}]: {q}")
-                    try:
-                        await page.goto(f"https://libgen.li/index.php?req={quote(q)}&res=25&filesuns=all", timeout=30000)
-                        soup = BeautifulSoup(await page.content(), 'html.parser')
-                        rows = soup.select('table[id="table-libgen"] tr') or soup.find_all('tr')[1:]
-                        for r in rows:
-                            cols = r.find_all('td')
-                            if len(cols) < 8: continue
-                            raw_t, raw_a, raw_l, raw_e = cols[0].get_text(strip=True).lower(), cols[1].get_text(strip=True).lower(), cols[4].get_text(strip=True).lower(), cols[7].get_text(strip=True).lower()
-                            if fmt in raw_e and (any(l in raw_l for l in ['english', 'eng']) or not raw_l.strip()) and _title_match(raw_t) and (any(p in raw_a for p in author_parts) if author_parts else True):
-                                ads = cols[-1].find('a', href=re.compile(r"ads\.php"))
-                                if ads:
-                                    direct = await self._resolve_mirror(urljoin("https://libgen.li", ads['href']), page)
-                                    if direct:
-                                        self.log(f"Found Libgen mirror ({fmt}).")
-                                        mirrors.append(("Libgen", direct, fmt))
-                                        break
-                        if mirrors: break
-                    except asyncio.CancelledError: raise
-                    except: pass
+                    for host in self._LIBGEN_HOSTS:
+                        hits = await self._search_libgen_host(host, q, fmt, page, _title_match, author_parts)
+                        if hits:
+                            mirrors.extend(hits)
+                            break
+                    if mirrors: break
 
                     try:
                         await page.goto(f"{self.annas_base}/search?q={quote(q)}&ext={fmt}&lang=en", timeout=30000)
                         results = BeautifulSoup(await page.content(), 'html.parser').select('a[href*="/md5/"]')
                         for cand in results[:10]:
                             cand_t = normalize_text(cand.get_text())
-                            if _title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True):
+                            if not (_title_match(cand.get_text()) and (any(p in cand_t for p in author_parts) if author_parts else True)):
+                                continue
+                            md5 = _extract_md5(cand.get('href', ''))
+                            if not md5: continue
+                            resolved = await self._resolve_md5(md5, page)
+                            if resolved:
+                                name, direct = resolved
+                                self.log(f"Found Anna's→{name} mirror ({fmt}, md5={md5[:8]}…).")
+                                mirrors.append((f"Anna {name}", direct, fmt))
+                            try:
                                 await page.goto(urljoin(self.annas_base, cand['href']), timeout=30000)
                                 msoup = BeautifulSoup(await page.content(), 'html.parser')
-                                lg = msoup.find('a', href=re.compile(r"libgen\.li/ads\.php"))
-                                if lg:
-                                    direct = await self._resolve_mirror(lg['href'], page)
-                                    if direct:
-                                        self.log(f"Found Anna's→Libgen mirror ({fmt}).")
-                                        mirrors.append(("Anna Libgen", direct, fmt))
                                 ipfs = msoup.find('a', href=re.compile(r"ipfs"))
-                                if ipfs and 'ipfs://' in ipfs['href']:
+                                if ipfs and 'ipfs://' in ipfs.get('href', ''):
                                     mirrors.append(("IPFS", f"https://ipfs.io/ipfs/{ipfs['href'].split('ipfs://')[1]}", fmt))
-                                if len(mirrors) >= 3: break
+                            except asyncio.CancelledError: raise
+                            except Exception: pass
+                            if len(mirrors) >= 3: break
                         if mirrors: break
                     except asyncio.CancelledError: raise
-                    except: pass
+                    except Exception as e:
+                        self.log(f"Anna's search '{q}' failed: {type(e).__name__}: {str(e)[:100]}")
                 if mirrors: break
         finally: await page.close()
         return mirrors
